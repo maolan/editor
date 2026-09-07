@@ -515,7 +515,9 @@ pub struct AudioDeviceOption {
     pub(crate) label: String,
     pub(crate) supported_bits: Vec<usize>,
     pub(crate) supported_sample_rates: Vec<i32>,
+    #[cfg(target_os = "freebsd")]
     pub(crate) max_channels: usize,
+    #[cfg(target_os = "freebsd")]
     pub(crate) max_buffer_bytes: usize,
     pub(crate) supports_input: bool,
     pub(crate) supports_output: bool,
@@ -552,13 +554,16 @@ impl AudioDeviceOption {
             label: label.into(),
             supported_bits,
             supported_sample_rates,
+            #[cfg(target_os = "freebsd")]
             max_channels: 0,
+            #[cfg(target_os = "freebsd")]
             max_buffer_bytes: 0,
             supports_input: true,
             supports_output: true,
         }
     }
 
+    #[cfg(target_os = "freebsd")]
     pub(crate) fn with_oss_caps(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -592,7 +597,9 @@ impl AudioDeviceOption {
             label: label.into(),
             supported_bits,
             supported_sample_rates,
+            #[cfg(target_os = "freebsd")]
             max_channels: 0,
+            #[cfg(target_os = "freebsd")]
             max_buffer_bytes: 0,
             supports_input,
             supports_output,
@@ -922,7 +929,7 @@ impl EditApp {
 
 pub fn new() -> (EditApp, Task<Message>) {
     let client = EngineClient::default();
-    let mut scan_tasks = vec![
+    let scan_tasks = vec![
         Task::perform(
             scan_plugins_startup(client.clone(), PluginFormat::Vst3),
             |loaded| {
@@ -943,18 +950,18 @@ pub fn new() -> (EditApp, Task<Message>) {
                 }
             },
         ),
+        #[cfg(unix)]
+        Task::perform(
+            scan_plugins_startup(client.clone(), PluginFormat::Lv2),
+            |loaded| {
+                if loaded {
+                    Message::Lv2PluginsLoaded
+                } else {
+                    Message::Lv2PluginsUnavailable
+                }
+            },
+        ),
     ];
-    #[cfg(unix)]
-    scan_tasks.push(Task::perform(
-        scan_plugins_startup(client.clone(), PluginFormat::Lv2),
-        |loaded| {
-            if loaded {
-                Message::Lv2PluginsLoaded
-            } else {
-                Message::Lv2PluginsUnavailable
-            }
-        },
-    ));
     (
         EditApp {
             status: String::from("Choose audio hardware and open the engine."),
@@ -3606,16 +3613,23 @@ fn selected_period_frames(setup: &StartupSetup) -> usize {
     }
 }
 
+#[cfg(target_os = "freebsd")]
 fn period_frame_options(setup: &StartupSetup) -> Vec<usize> {
-    #[cfg(target_os = "freebsd")]
+    if !setup.audio_engine.is_jack()
+        && let Some(device) = setup.output_device.as_ref()
+        && let Some(options) = oss_period_frame_options(device, selected_bits(setup) as usize)
     {
-        if !setup.audio_engine.is_jack()
-            && let Some(device) = setup.output_device.as_ref()
-            && let Some(options) = oss_period_frame_options(device, selected_bits(setup) as usize)
-        {
-            return options;
-        }
+        return options;
     }
+    default_period_frame_options()
+}
+
+#[cfg(not(target_os = "freebsd"))]
+fn period_frame_options(_setup: &StartupSetup) -> Vec<usize> {
+    default_period_frame_options()
+}
+
+fn default_period_frame_options() -> Vec<usize> {
     vec![
         16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
     ]

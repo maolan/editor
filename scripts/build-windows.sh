@@ -28,12 +28,28 @@ REMOTE_REPO='https://github.com/maolan/editor.git'
 mkdir -p "$DIST_DIR"
 
 remote_ps() {
-    local script="$1"
-    ssh "$CONNECTION" powershell -NoProfile -ExecutionPolicy Bypass -Command "$script"
+    local local_script
+    local remote_script
+    local status
+
+    local_script="$(mktemp)"
+    remote_script="maolan-editor-remote-$$-$RANDOM.ps1"
+    cat > "$local_script"
+
+    scp -q "$local_script" "$CONNECTION:$remote_script"
+    if ssh "$CONNECTION" powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$remote_script"; then
+        status=0
+    else
+        status=$?
+    fi
+    ssh "$CONNECTION" powershell.exe -NoProfile -Command "Remove-Item -Force '$remote_script' -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
+    rm -f "$local_script"
+    return "$status"
 }
 
 echo "Preparing Windows host: $CONNECTION"
-remote_ps "\$ErrorActionPreference = 'Stop'
+remote_ps <<PS
+\$ErrorActionPreference = 'Stop'
 function Test-Command([string]\$Name) {
     return [bool](Get-Command \$Name -ErrorAction SilentlyContinue)
 }
@@ -44,7 +60,7 @@ if (-not (Test-Command 'git')) {
         Invoke-WebRequest -Uri 'https://github.com/git-for-windows/git/releases/download/v2.49.0.windows.1/Git-2.49.0-64-bit.exe' -OutFile \$installer
     }
     Start-Process -FilePath \$installer -ArgumentList '/VERYSILENT','/NORESTART' -Wait
-    \$env:PATH = \"\$env:ProgramFiles\Git\cmd;\$env:PATH\"
+    \$env:PATH = "\$env:ProgramFiles\Git\cmd;\$env:PATH"
 }
 if (-not (Test-Path '$REMOTE_ROOT')) {
     New-Item -ItemType Directory -Force '$REMOTE_ROOT' | Out-Null
@@ -57,22 +73,35 @@ if (-not (Test-Path '$REMOTE_EDITOR')) {
     git clean -fdx
     git pull --ff-only
     Pop-Location
-}"
+}
+PS
 
 echo "Building Maolan Editor on Windows..."
-remote_ps "\$ErrorActionPreference = 'Stop'
+remote_ps <<PS
+\$ErrorActionPreference = 'Stop'
 Push-Location '$REMOTE_EDITOR'
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
-Pop-Location"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
+Pop-Location
+PS
 
 echo "Fetching installer..."
-REMOTE_SETUP="$(remote_ps "\$ErrorActionPreference = 'Stop'
+REMOTE_OUTPUT="$({ remote_ps <<PS
+\$ErrorActionPreference = 'Stop'
 \$dist = Join-Path '$REMOTE_EDITOR' 'dist'
 \$setup = Get-ChildItem -Path \$dist -Filter 'maolan-editor-*.windows.amd64.exe' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if (-not \$setup) {
-    throw \"No maolan-editor Windows setup file found in \$dist\"
+    throw 'No maolan-editor Windows setup file found in dist'
 }
-\$setup.FullName -replace '\\', '/'" | tr -d '\r' | tail -n1)"
+Write-Output ('__MAOLAN_SETUP__' + (\$setup.FullName -replace '\\\\', '/'))
+PS
+} | tr -d '\r')"
+REMOTE_SETUP="$(printf "%s\n" "$REMOTE_OUTPUT" | sed -n 's/^__MAOLAN_SETUP__//p' | tail -n1)"
+
+if [[ -z "$REMOTE_SETUP" ]]; then
+    printf "%s\n" "$REMOTE_OUTPUT" >&2
+    echo "Error: Could not determine remote setup file path." >&2
+    exit 1
+fi
 
 scp "$CONNECTION:$REMOTE_SETUP" "$DIST_DIR/"
 
