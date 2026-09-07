@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# build-debian.sh - Build a .deb package for Maolan Editor on Debian.
+# build-debian.sh - Build a .deb package and an AppImage for Maolan Editor on Debian.
 #
 # Usage:
 #   ./scripts/build-debian.sh [OPTIONS]
@@ -14,7 +14,7 @@ set -euo pipefail
 #   -h, --help               Show this help message
 #
 # The script installs build dependencies via apt, installs Rust via rustup if missing,
-# builds the release binary, and produces a .deb package.
+# builds the release binary, and produces a .deb package and an AppImage using linuxdeploy.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_DIR="$(dirname "$SCRIPT_DIR")"
@@ -70,7 +70,7 @@ fi
 DEB_ARCH="$(dpkg --print-architecture)"
 PKG_NAME="maolan-editor"
 DEB_NAME="${PKG_NAME}-${PKG_VERSION}-debian.${DEB_ARCH}.deb"
-
+APPIMAGE_NAME="${PKG_NAME}-${PKG_VERSION}-x86_64.AppImage"
 
 pipewire_installed() {
     dpkg-query -W -f='${Status}' pipewire 2>/dev/null | grep -q "install ok installed"
@@ -86,6 +86,12 @@ else
     JACK_PROVIDER_LABEL="JACK"
 fi
 
+if apt-cache show libfuse2t64 >/dev/null 2>&1; then
+    FUSE_PACKAGE="libfuse2t64"
+else
+    FUSE_PACKAGE="libfuse2"
+fi
+
 if apt-cache show libasound2t64 >/dev/null 2>&1; then
     ALSA_RUNTIME_PACKAGE="libasound2t64"
 else
@@ -93,16 +99,17 @@ else
 fi
 
 echo "========================================"
-echo "Building Maolan Editor .deb package"
+echo "Building Maolan Editor .deb package and AppImage"
 echo "Version: $PKG_VERSION"
 echo "Architecture: $DEB_ARCH"
 echo "Source: $SOURCE_DIR"
 echo "Deb output: $OUTPUT_DIR/$DEB_NAME"
+echo "AppImage output: $OUTPUT_DIR/$APPIMAGE_NAME"
 echo "JACK provider: $JACK_PROVIDER_LABEL"
 echo "========================================"
 
 echo ""
-echo "[1/6] Installing build dependencies..."
+echo "[1/7] Installing build dependencies..."
 sudo apt-get update
 sudo apt-get install -y \
     pkg-config \
@@ -110,13 +117,14 @@ sudo apt-get install -y \
     "${JACK_BUILD_PACKAGES[@]}" \
     libasound2-dev \
     libxkbcommon-dev \
+    "$FUSE_PACKAGE" \
     fakeroot \
     curl \
     ca-certificates \
     git
 
 echo ""
-echo "[2/6] Checking Rust toolchain..."
+echo "[2/7] Checking Rust toolchain..."
 if ! command -v cargo &>/dev/null; then
     echo "Rust not found. Installing via rustup..."
     export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
@@ -132,7 +140,7 @@ if [[ -f "${CARGO_HOME:-$HOME/.cargo}/env" ]]; then
 fi
 
 echo ""
-echo "[3/6] Building release binary..."
+echo "[3/7] Building release binary..."
 cd "$SOURCE_DIR"
 
 CARGO_ARGS=("--release" "--all-targets")
@@ -158,10 +166,11 @@ fi
 echo "Build completed successfully."
 
 echo ""
-echo "[4/6] Preparing Debian package structure..."
+echo "[4/7] Preparing Debian package structure..."
 
 STAGING_DIR="$(mktemp -d)"
-trap "rm -rf '$STAGING_DIR'" EXIT
+APPDIR_BASE="$(mktemp -d)"
+trap "rm -rf '$STAGING_DIR' '$APPDIR_BASE'" EXIT
 
 mkdir -p "$STAGING_DIR/DEBIAN"
 mkdir -p "$STAGING_DIR/usr/bin"
@@ -227,16 +236,55 @@ License: BSD-2-Clause
 EOF
 
 echo ""
-echo "[5/6] Building .deb package..."
+echo "[5/7] Building .deb package..."
 mkdir -p "$OUTPUT_DIR"
 fakeroot dpkg-deb --build "$STAGING_DIR" "$OUTPUT_DIR/$DEB_NAME"
 
 echo ""
-echo "[6/6] Verifying package..."
+echo "[6/7] Building AppImage..."
+
+APPDIR="$APPDIR_BASE/AppDir"
+mkdir -p "$APPDIR/usr/bin"
+mkdir -p "$APPDIR/usr/share/applications"
+mkdir -p "$APPDIR/usr/share/icons/hicolor/scalable/apps"
+
+cp "$BIN_DIR/maolan-editor" "$APPDIR/usr/bin/"
+cp "$STAGING_DIR/usr/share/applications/maolan-editor.desktop" "$APPDIR/usr/share/applications/maolan-editor.desktop"
+cp "$STAGING_DIR/usr/share/icons/hicolor/scalable/apps/maolan-editor.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/maolan-editor.svg"
+
+LINUXDEPLOY_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/maolan"
+LINUXDEPLOY="$LINUXDEPLOY_CACHE/linuxdeploy-x86_64.AppImage"
+mkdir -p "$LINUXDEPLOY_CACHE"
+if [[ ! -f "$LINUXDEPLOY" ]]; then
+    echo "Downloading linuxdeploy..."
+    curl -L -o "$LINUXDEPLOY" "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+    chmod +x "$LINUXDEPLOY"
+fi
+
+cd "$APPDIR_BASE"
+"$LINUXDEPLOY" --appimage-extract-and-run \
+    --appdir "$APPDIR" \
+    --desktop-file "$APPDIR/usr/share/applications/maolan-editor.desktop" \
+    --icon-file "$APPDIR/usr/share/icons/hicolor/scalable/apps/maolan-editor.svg" \
+    --executable "$APPDIR/usr/bin/maolan-editor" \
+    --output appimage
+
+BUILT_APPIMAGE=("$APPDIR_BASE"/*.AppImage)
+if [[ ! -f "${BUILT_APPIMAGE[0]}" ]]; then
+    echo "Error: No AppImage was produced in $APPDIR_BASE" >&2
+    exit 1
+fi
+mv "${BUILT_APPIMAGE[0]}" "$OUTPUT_DIR/$APPIMAGE_NAME"
+chmod +x "$OUTPUT_DIR/$APPIMAGE_NAME"
+
+echo ""
+echo "[7/7] Verifying packages..."
 dpkg-deb --info "$OUTPUT_DIR/$DEB_NAME"
 dpkg-deb --contents "$OUTPUT_DIR/$DEB_NAME"
+ls -lh "$OUTPUT_DIR/$APPIMAGE_NAME"
 echo ""
 echo "========================================"
-echo "Package built successfully:"
+echo "Packages built successfully:"
 echo "  $OUTPUT_DIR/$DEB_NAME"
+echo "  $OUTPUT_DIR/$APPIMAGE_NAME"
 echo "========================================"
