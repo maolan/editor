@@ -34,7 +34,8 @@ use maolan_widgets::{
     menu::{menu_bar, menu_dropdown, menu_item, menu_items},
     meters,
 };
-use rubato::Resampler;
+use rubato::audioadapter_buffers::direct::SequentialSliceOfVecs;
+use rubato::{Fft, FixedSync, Resampler};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -2728,37 +2729,27 @@ fn resample_interleaved(
         }
     }
 
-    let ratio = to_rate as f64 / from_rate as f64;
-    let chunk_size = 1024.min(frames);
-    let mut resampler = rubato::FastFixedIn::<f32>::new(
-        ratio,
-        2.0,
-        rubato::PolynomialDegree::Linear,
-        chunk_size,
+    let input = SequentialSliceOfVecs::new(&input_per_channel, channels, frames)
+        .map_err(|err| format!("Failed to wrap input samples: {err}"))?;
+    let mut resampler = Fft::<f32>::new(
+        from_rate as usize,
+        to_rate as usize,
+        1024,
         channels,
+        FixedSync::Both,
     )
     .map_err(|err| format!("Failed to create resampler: {err}"))?;
 
-    for channel in &mut input_per_channel {
-        channel.resize(chunk_size, 0.0);
-    }
-
-    let output_per_channel = resampler
-        .process(&input_per_channel, None)
+    let output = resampler
+        .process_all(&input, frames, None)
         .map_err(|err| format!("Failed to resample: {err}"))?;
 
-    let expected_output_frames = (frames as f64 * ratio).round() as usize;
-    let output_frames = output_per_channel
-        .first()
-        .map(|channel| channel.len().min(expected_output_frames))
-        .unwrap_or(0);
-    let mut output = Vec::with_capacity(output_frames * channels);
-    output.extend(
-        (0..output_frames)
-            .flat_map(|frame| output_per_channel.iter().map(move |channel| channel[frame])),
-    );
+    let expected_output_frames =
+        (frames as f64 * to_rate as f64 / from_rate as f64).round() as usize;
+    let mut output_samples = output.take_data();
+    output_samples.truncate(expected_output_frames * channels);
 
-    Ok(output)
+    Ok(output_samples)
 }
 
 fn detect_markers(
