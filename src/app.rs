@@ -82,6 +82,7 @@ pub enum Message {
     FadeOut,
     IncreaseVolume,
     DecreaseVolume,
+    Reverse,
     Undo,
     Redo,
     DeleteSelection,
@@ -139,6 +140,7 @@ pub fn message_edits_document(message: &Message) -> bool {
             | Message::FadeOut
             | Message::IncreaseVolume
             | Message::DecreaseVolume
+            | Message::Reverse
             | Message::Undo
             | Message::Redo
             | Message::DeleteSelection
@@ -390,11 +392,12 @@ struct AudioEdits {
     fade_in_samples: usize,
     fade_out_samples: usize,
     gain_db: f32,
+    reversed: bool,
 }
 
 impl AudioEdits {
-    fn is_default(self) -> bool {
-        self == Self::default()
+    fn needs_rendered_preview_file(self) -> bool {
+        self.fade_in_samples != 0 || self.fade_out_samples != 0 || self.gain_db != 0.0
     }
 }
 
@@ -503,6 +506,7 @@ struct EngineDocumentRequest {
     clip_len: usize,
     clip_offset: usize,
     render_preview: bool,
+    reversed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1154,7 +1158,7 @@ pub fn update(app: &mut EditApp, message: Message) -> Task<Message> {
                         app.busy = true;
                         app.busy_progress = 0.0;
                         app.status = format!("Saving {}...", path.display());
-                        let samples = audio.preview_samples.clone();
+                        let samples = audio.rendered_save_samples();
                         let channels = audio.channels;
                         let sample_rate = audio.sample_rate;
                         Task::perform(
@@ -1370,6 +1374,7 @@ pub fn update(app: &mut EditApp, message: Message) -> Task<Message> {
         Message::FadeOut => apply_standalone_edit(app, EditOperation::FadeOut),
         Message::IncreaseVolume => apply_standalone_edit(app, EditOperation::IncreaseVolume),
         Message::DecreaseVolume => apply_standalone_edit(app, EditOperation::DecreaseVolume),
+        Message::Reverse => reverse_clip(app),
         Message::Undo => {
             let Some(audio) = app.audio.as_mut() else {
                 app.status = String::from("No audio file is open.");
@@ -1465,7 +1470,7 @@ pub fn update(app: &mut EditApp, message: Message) -> Task<Message> {
             app.busy = true;
             app.busy_progress = 0.0;
             app.status = format!("Saving {}...", path.display());
-            let samples = audio.preview_samples.clone();
+            let samples = audio.rendered_save_samples();
             let channels = audio.channels;
             let sample_rate = audio.sample_rate;
             Task::perform(
@@ -1954,6 +1959,7 @@ pub fn menu(show_open: bool) -> Element<'static, Message> {
         (menu_item("Undo", Message::Undo)),
         (menu_item("Redo", Message::Redo)),
         (menu_item("Next Zero Crossing", Message::JumpToNextZeroCrossing)),
+        (menu_item("Reverse", Message::Reverse)),
         (menu_item("Detect Markers", Message::DetectMarkersDialog)),
         (menu_item("Export Markers", Message::ExportMarkersDialog)),
         (menu_item("Preferences", Message::PreferencesDialog)),
@@ -1987,6 +1993,7 @@ pub fn standalone_menu() -> Element<'static, Message> {
         (menu_item("Undo", Message::Undo)),
         (menu_item("Redo", Message::Redo)),
         (menu_item("Next Zero Crossing", Message::JumpToNextZeroCrossing)),
+        (menu_item("Reverse", Message::Reverse)),
         (menu_item("Detect Markers", Message::DetectMarkersDialog)),
         (menu_item("Export Markers", Message::ExportMarkersDialog)),
         (menu_item("Preferences", Message::PreferencesDialog)),
@@ -2848,7 +2855,7 @@ impl AudioDocument {
         let samples = clip_samples(&samples, channels, region);
         let edits = AudioEdits::default();
         progress_callback(0.78, &format!("Applying preview edits to {name}..."));
-        let preview = apply_edits(&samples, channels, edits);
+        let preview = render_preview_samples(&samples, channels, edits);
         progress_callback(0.85, &format!("Preparing waveform for {name}..."));
         let channel_samples = deinterleave(&preview, channels);
         progress_callback(0.95, &format!("Measuring peak level for {name}..."));
@@ -2876,10 +2883,14 @@ impl AudioDocument {
     }
 
     fn rebuild_preview(&mut self) {
-        let preview = apply_edits(&self.samples, self.channels, self.edits);
+        let preview = render_preview_samples(&self.samples, self.channels, self.edits);
         self.preview_samples = preview.clone();
         self.channel_samples = deinterleave(&preview, self.channels);
         self.peak = peak(&preview);
+    }
+
+    fn rendered_save_samples(&self) -> Vec<f32> {
+        render_preview_samples(&self.samples, self.channels, self.edits)
     }
 
     fn next_zero_crossing_frame(&self, start_frame: usize) -> Option<usize> {
@@ -2969,6 +2980,35 @@ fn apply_standalone_edit(app: &mut EditApp, operation: EditOperation) -> Task<Me
             }
         }
     }
+    app.history.record(
+        previous_snapshot,
+        DocumentSnapshot {
+            samples: audio.samples.clone(),
+            edits: audio.edits,
+            markers: audio.markers.clone(),
+        },
+    );
+    audio.rebuild_preview();
+    prepare_document_track(app)
+}
+
+fn reverse_clip(app: &mut EditApp) -> Task<Message> {
+    let Some(audio) = app.audio.as_mut() else {
+        app.status = String::from("No audio file is open.");
+        return Task::none();
+    };
+
+    let previous_snapshot = DocumentSnapshot {
+        samples: audio.samples.clone(),
+        edits: audio.edits,
+        markers: audio.markers.clone(),
+    };
+    audio.edits.reversed = !audio.edits.reversed;
+    app.status = if audio.edits.reversed {
+        String::from("Clip reversed.")
+    } else {
+        String::from("Clip restored to forward playback.")
+    };
     app.history.record(
         previous_snapshot,
         DocumentSnapshot {
@@ -3113,6 +3153,24 @@ fn apply_edit_to_samples(
 
 fn default_fade_samples(frames: usize) -> usize {
     (frames / 20).clamp(240, 48_000).min(frames / 2)
+}
+
+fn reverse_samples(samples: &[f32], channels: usize) -> Vec<f32> {
+    let channels = channels.max(1);
+    let mut output = Vec::with_capacity(samples.len());
+    for frame in samples.chunks_exact(channels).rev() {
+        output.extend_from_slice(frame);
+    }
+    output
+}
+
+fn render_preview_samples(samples: &[f32], channels: usize, edits: AudioEdits) -> Vec<f32> {
+    let edited = apply_edits(samples, channels, edits);
+    if edits.reversed {
+        reverse_samples(&edited, channels)
+    } else {
+        edited
+    }
 }
 
 fn apply_edits(samples: &[f32], channels: usize, edits: AudioEdits) -> Vec<f32> {
@@ -3286,11 +3344,11 @@ fn prepare_document_track(app: &mut EditApp) -> Task<Message> {
     };
     let client = playback.client.clone();
     let path = audio.source_path.clone();
-    let samples = audio.preview_samples.clone();
+    let samples = apply_edits(&audio.samples, audio.channels, audio.edits);
     let channels = audio.channels;
     let sample_rate = audio.sample_rate;
     let clip_len = audio.frames();
-    let render_preview = !audio.edits.is_default();
+    let render_preview = audio.edits.needs_rendered_preview_file();
     let clip_offset = if render_preview {
         0
     } else {
@@ -3311,6 +3369,7 @@ fn prepare_document_track(app: &mut EditApp) -> Task<Message> {
         clip_len,
         clip_offset,
         render_preview,
+        reversed: audio.edits.reversed,
     };
     Task::perform(
         async move { prepare_engine_document(client, request).await },
@@ -3434,6 +3493,7 @@ async fn prepare_engine_document(
             offset: request.clip_offset,
             input_channel: 0,
             muted: false,
+            reversed: request.reversed,
             peaks_file: None,
             kind: Kind::Audio,
             fade_enabled: true,
