@@ -175,31 +175,11 @@ cp "$BIN_DIR/maolan-editor" "$STAGING_DIR/usr/bin/"
 strip "$STAGING_DIR/usr/bin/maolan-editor"
 chmod 755 "$STAGING_DIR/usr/bin/maolan-editor"
 
-cat > "$STAGING_DIR/usr/share/applications/maolan-editor.desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Name=Maolan Editor
-Comment=Simple audio editor for Maolan audio files
-GenericName=Audio Editor
-Exec=/usr/bin/maolan-editor %f
-Icon=maolan-editor
-Terminal=false
-Categories=AudioVideo;Audio;AudioVideoEditing;
-MimeType=audio/wav;audio/flac;audio/mpeg;audio/ogg;
-Keywords=audio;editor;waveform;maolan;
-StartupNotify=true
-EOF
+cp "$SOURCE_DIR/assets/desktop/maolan-editor-linux.desktop" "$STAGING_DIR/usr/share/applications/maolan-editor.desktop"
 chmod 644 "$STAGING_DIR/usr/share/applications/maolan-editor.desktop"
 
-ICON_SOURCE="$SOURCE_DIR/../maolan/assets/images/maolan-icon.svg"
-if [[ -f "$ICON_SOURCE" ]]; then
-    cp "$ICON_SOURCE" "$STAGING_DIR/usr/share/icons/hicolor/scalable/apps/maolan-editor.svg"
-else
-    cat > "$STAGING_DIR/usr/share/icons/hicolor/scalable/apps/maolan-editor.svg" <<EOF
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><rect width="128" height="128" rx="24" fill="#151515"/><path d="M24 82h80v14H24zM32 58h14v18H32zM54 34h14v42H54zM76 48h14v28H76z" fill="#f2c94c"/></svg>
-EOF
-fi
-chmod 644 "$STAGING_DIR/usr/share/icons/hicolor/scalable/apps/maolan-editor.svg"
+cp "$SOURCE_DIR/assets/images/maolan-editor-icon.svg" "$STAGING_DIR/usr/share/icons/hicolor/scalable/apps/maolan-editor-icon.svg"
+chmod 644 "$STAGING_DIR/usr/share/icons/hicolor/scalable/apps/maolan-editor-icon.svg"
 
 cp "$SOURCE_DIR/README.md" "$STAGING_DIR/usr/share/doc/$PKG_NAME/"
 cp "$SOURCE_DIR/LICENSE" "$STAGING_DIR/usr/share/doc/$PKG_NAME/"
@@ -238,7 +218,7 @@ tar xzf %{SOURCE0}
 %defattr(-,root,root,-)
 /usr/bin/maolan-editor
 /usr/share/applications/maolan-editor.desktop
-/usr/share/icons/hicolor/scalable/apps/maolan-editor.svg
+/usr/share/icons/hicolor/scalable/apps/maolan-editor-icon.svg
 %doc /usr/share/doc/maolan-editor/README.md
 %license /usr/share/doc/maolan-editor/LICENSE
 

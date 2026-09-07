@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Maolan Editor
+Comment=Simple audio editor for Maolan audio files
+GenericName=Audio Editor
+Exec=/usr/local/bin/maolan-editor %f
+Icon=/usr/local/share/icons/hicolor/scalable/apps/maolan-editor-icon.svg
+Terminal=false
+Categories=AudioVideo;Audio;AudioVideoEditing;
+MimeType=audio/wav;audio/flac;audio/mpeg;audio/ogg;
+Keywords=audio;editor;waveform;maolan;
+StartupNotify=true
