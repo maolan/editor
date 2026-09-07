@@ -1,5 +1,7 @@
 # Maolan Edit
 
+[![crates.io](https://img.shields.io/crates/v/maolan-editor.svg)](https://crates.io/crates/maolan-editor)
+
 Maolan Edit is a small audio editor built on Maolan's shared Rust audio stack.
 It is intended to grow into a waveform editor in the spirit of classic tools
 such as Sound Forge or Audacity, while reusing Maolan's codecs and UI widgets.
