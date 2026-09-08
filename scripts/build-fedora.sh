@@ -142,6 +142,7 @@ if [[ -n "$TARGET_DIR" ]]; then
     echo "Using local target directory: $TARGET_DIR"
 fi
 
+cargo clean
 cargo build "${CARGO_ARGS[@]}"
 
 if [[ -n "$TARGET_DIR" ]]; then
