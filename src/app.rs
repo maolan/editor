@@ -45,6 +45,7 @@ use maolan_widgets::{
 use rubato::audioadapter_buffers::direct::SequentialSliceOfVecs;
 #[cfg(feature = "standalone")]
 use rubato::{Fft, FixedSync, Resampler};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -92,6 +93,7 @@ pub enum Message {
     IncreaseVolume,
     DecreaseVolume,
     Reverse,
+    EditAction(AudioEditAction),
     Undo,
     Redo,
     DeleteSelection,
@@ -151,6 +153,7 @@ pub fn message_edits_document(message: &Message) -> bool {
             | Message::IncreaseVolume
             | Message::DecreaseVolume
             | Message::Reverse
+            | Message::EditAction(_)
             | Message::Undo
             | Message::Redo
             | Message::DeleteSelection
@@ -226,7 +229,34 @@ pub fn rendered_audio(app: &EditApp) -> Option<RenderedAudio> {
 }
 
 pub fn current_audio_edits(app: &EditApp) -> Option<AudioEdits> {
-    app.audio.as_ref().map(|audio| audio.edits)
+    app.audio.as_ref().map(|audio| audio.edit_summary())
+}
+
+pub fn current_audio_edit_actions(app: &EditApp) -> Option<Vec<AudioEditAction>> {
+    app.audio.as_ref().map(|audio| audio.edit_actions.clone())
+}
+
+pub fn audio_edit_action_for_message(app: &EditApp, message: &Message) -> Option<AudioEditAction> {
+    let audio = app.audio.as_ref()?;
+    match message {
+        Message::EditAction(action) => Some(*action),
+        Message::FadeIn => Some(audio.region_action(AudioEditKind::FadeIn)),
+        Message::FadeOut => Some(audio.region_action(AudioEditKind::FadeOut)),
+        Message::IncreaseVolume => {
+            Some(audio.region_action(AudioEditKind::GainDb { delta_db: 1.0 }))
+        }
+        Message::DecreaseVolume => {
+            Some(audio.region_action(AudioEditKind::GainDb { delta_db: -1.0 }))
+        }
+        Message::Reverse => Some(AudioEditAction::Reverse),
+        Message::DeleteSelection => app.selection_samples.and_then(|(start, end)| {
+            (start < end).then_some(AudioEditAction::Delete {
+                start_sample: start,
+                length_samples: end - start,
+            })
+        }),
+        _ => None,
+    }
 }
 
 pub fn open_audio(app: &mut EditApp, audio: AudioBuffer) -> Task<Message> {
@@ -277,6 +307,7 @@ pub struct AudioDocument {
     peak: f32,
     clip_region: Option<AudioRegion>,
     edits: AudioEdits,
+    edit_actions: Vec<AudioEditAction>,
     markers: Vec<(usize, String)>,
 }
 
@@ -448,7 +479,40 @@ struct AudioRegion {
     length: usize,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum AudioEditAction {
+    FadeIn {
+        start_sample: usize,
+        length_samples: usize,
+    },
+    FadeOut {
+        start_sample: usize,
+        length_samples: usize,
+    },
+    GainDb {
+        start_sample: usize,
+        length_samples: usize,
+        delta_db: f32,
+    },
+    Reverse,
+    Delete {
+        start_sample: usize,
+        length_samples: usize,
+    },
+    ReplaceWithSilence {
+        start_sample: usize,
+        length_samples: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AudioEditKind {
+    FadeIn,
+    FadeOut,
+    GainDb { delta_db: f32 },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct AudioEdits {
     pub fade_in_samples: usize,
     pub fade_out_samples: usize,
@@ -463,10 +527,126 @@ impl AudioEdits {
     }
 }
 
+impl AudioEditAction {
+    fn is_empty_for_frames(self, frames: usize) -> bool {
+        match self {
+            Self::FadeIn {
+                start_sample,
+                length_samples,
+            }
+            | Self::FadeOut {
+                start_sample,
+                length_samples,
+            }
+            | Self::GainDb {
+                start_sample,
+                length_samples,
+                ..
+            }
+            | Self::Delete {
+                start_sample,
+                length_samples,
+            }
+            | Self::ReplaceWithSilence {
+                start_sample,
+                length_samples,
+            } => start_sample >= frames || length_samples == 0,
+            Self::Reverse => false,
+        }
+    }
+}
+
+pub fn summarize_audio_edit_actions(frames: usize, actions: &[AudioEditAction]) -> AudioEdits {
+    let mut edits = AudioEdits::default();
+    for action in actions {
+        match *action {
+            AudioEditAction::FadeIn {
+                start_sample: 0,
+                length_samples,
+            } => {
+                edits.fade_in_samples = edits.fade_in_samples.max(length_samples.min(frames));
+            }
+            AudioEditAction::FadeOut {
+                start_sample,
+                length_samples,
+            } if start_sample.saturating_add(length_samples) >= frames => {
+                edits.fade_out_samples = edits.fade_out_samples.max(length_samples.min(frames));
+            }
+            AudioEditAction::GainDb {
+                start_sample,
+                length_samples,
+                delta_db,
+            } if start_sample == 0 && length_samples >= frames => {
+                edits.gain_db = (edits.gain_db + delta_db).clamp(-48.0, 24.0);
+            }
+            AudioEditAction::Reverse => edits.reversed = !edits.reversed,
+            _ => {}
+        }
+    }
+    edits
+}
+
+fn audio_edit_status(action: AudioEditAction, edits: AudioEdits, frames: usize) -> String {
+    match action {
+        AudioEditAction::FadeIn {
+            start_sample,
+            length_samples: _,
+        } => {
+            if start_sample == 0 {
+                String::from("Fade in applied to preview.")
+            } else {
+                String::from("Fade in applied to selection.")
+            }
+        }
+        AudioEditAction::FadeOut {
+            start_sample,
+            length_samples,
+        } => {
+            if start_sample.saturating_add(length_samples) >= frames {
+                String::from("Fade out applied to preview.")
+            } else {
+                String::from("Fade out applied to selection.")
+            }
+        }
+        AudioEditAction::GainDb {
+            start_sample,
+            length_samples,
+            ..
+        } => {
+            if start_sample == 0 && length_samples > 0 {
+                format!("Preview gain: {:+.1} dB.", edits.gain_db)
+            } else {
+                String::from("Volume adjusted on selection.")
+            }
+        }
+        AudioEditAction::Reverse => {
+            if edits.reversed {
+                String::from("Clip reversed.")
+            } else {
+                String::from("Clip restored to forward playback.")
+            }
+        }
+        AudioEditAction::Delete { .. } => String::from("Selection deleted."),
+        AudioEditAction::ReplaceWithSilence { .. } => {
+            String::from("Selection replaced with silence.")
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+enum EditOperation {
+    FadeIn,
+    FadeOut,
+    IncreaseVolume,
+    DecreaseVolume,
+}
+
 #[derive(Debug, Clone)]
 struct DocumentSnapshot {
     samples: Vec<f32>,
     edits: AudioEdits,
+    edit_actions: Vec<AudioEditAction>,
     markers: Vec<(usize, String)>,
 }
 
@@ -1499,11 +1679,12 @@ pub fn update(app: &mut EditApp, message: Message) -> Task<Message> {
             app.status = err;
             Task::none()
         }
-        Message::FadeIn => apply_standalone_edit(app, EditOperation::FadeIn),
-        Message::FadeOut => apply_standalone_edit(app, EditOperation::FadeOut),
-        Message::IncreaseVolume => apply_standalone_edit(app, EditOperation::IncreaseVolume),
-        Message::DecreaseVolume => apply_standalone_edit(app, EditOperation::DecreaseVolume),
-        Message::Reverse => reverse_clip(app),
+        Message::FadeIn
+        | Message::FadeOut
+        | Message::IncreaseVolume
+        | Message::DecreaseVolume
+        | Message::Reverse => dispatch_audio_edit(app, message.clone()),
+        Message::EditAction(action) => apply_standalone_audio_edit_action(app, action),
         Message::Undo => {
             let Some(audio) = app.audio.as_mut() else {
                 app.status = String::from("No audio file is open.");
@@ -1580,6 +1761,7 @@ pub fn update(app: &mut EditApp, message: Message) -> Task<Message> {
             app.history = EditHistory::new(DocumentSnapshot {
                 samples: audio.samples.clone(),
                 edits: audio.edits,
+                edit_actions: audio.edit_actions.clone(),
                 markers: audio.markers.clone(),
             });
             app.audio = Some(audio);
@@ -3039,7 +3221,8 @@ impl AudioDocument {
         });
         let samples = clip_samples(audio.samples.as_ref(), channels, region);
         let edits = AudioEdits::default();
-        let preview = render_preview_samples(&samples, channels, edits);
+        let edit_actions = Vec::new();
+        let preview = render_preview_samples(&samples, channels, &edit_actions);
         let channel_samples = deinterleave(&preview, channels);
         let peak = peak(&preview);
 
@@ -3054,6 +3237,7 @@ impl AudioDocument {
             peak,
             clip_region: region,
             edits,
+            edit_actions,
             markers: Vec::new(),
         })
     }
@@ -3080,8 +3264,9 @@ impl AudioDocument {
         progress_callback(0.72, &format!("Preparing clip from {name}..."));
         let samples = clip_samples(&samples, channels, region);
         let edits = AudioEdits::default();
+        let edit_actions = Vec::new();
         progress_callback(0.78, &format!("Applying preview edits to {name}..."));
-        let preview = render_preview_samples(&samples, channels, edits);
+        let preview = render_preview_samples(&samples, channels, &edit_actions);
         progress_callback(0.85, &format!("Preparing waveform for {name}..."));
         let channel_samples = deinterleave(&preview, channels);
         progress_callback(0.95, &format!("Measuring peak level for {name}..."));
@@ -3100,6 +3285,7 @@ impl AudioDocument {
             peak,
             clip_region: region,
             edits,
+            edit_actions,
             markers: Vec::new(),
         })
     }
@@ -3109,15 +3295,44 @@ impl AudioDocument {
     }
 
     fn rebuild_preview(&mut self) {
-        let preview = render_preview_samples(&self.samples, self.channels, self.edits);
+        self.edits = summarize_audio_edit_actions(self.frames(), &self.edit_actions);
+        let preview = render_preview_samples(&self.samples, self.channels, &self.edit_actions);
         self.preview_samples = preview.clone();
         self.channel_samples = deinterleave(&preview, self.channels);
         self.peak = peak(&preview);
     }
 
+    fn region_action(&self, kind: AudioEditKind) -> AudioEditAction {
+        match kind {
+            AudioEditKind::FadeIn => {
+                let length = default_fade_samples(self.frames());
+                AudioEditAction::FadeIn {
+                    start_sample: 0,
+                    length_samples: length,
+                }
+            }
+            AudioEditKind::FadeOut => {
+                let length = default_fade_samples(self.frames());
+                AudioEditAction::FadeOut {
+                    start_sample: self.frames().saturating_sub(length),
+                    length_samples: length,
+                }
+            }
+            AudioEditKind::GainDb { delta_db } => AudioEditAction::GainDb {
+                start_sample: 0,
+                length_samples: self.frames(),
+                delta_db,
+            },
+        }
+    }
+
+    fn edit_summary(&self) -> AudioEdits {
+        summarize_audio_edit_actions(self.frames(), &self.edit_actions)
+    }
+
     #[cfg(feature = "standalone")]
     fn rendered_save_samples(&self) -> Vec<f32> {
-        render_preview_samples(&self.samples, self.channels, self.edits)
+        render_preview_samples(&self.samples, self.channels, &self.edit_actions)
     }
 
     fn next_zero_crossing_frame(&self, start_frame: usize) -> Option<usize> {
@@ -3146,101 +3361,61 @@ impl AudioDocument {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum EditOperation {
-    FadeIn,
-    FadeOut,
-    IncreaseVolume,
-    DecreaseVolume,
-}
-
-fn apply_standalone_edit(app: &mut EditApp, operation: EditOperation) -> Task<Message> {
-    let Some(audio) = app.audio.as_mut() else {
-        app.status = String::from("No audio file is open.");
-        return Task::none();
-    };
-
-    let previous_snapshot = DocumentSnapshot {
-        samples: audio.samples.clone(),
-        edits: audio.edits,
-        markers: audio.markers.clone(),
-    };
-
-    if let Some((start, end)) = app.selection_samples {
-        let frames = audio.frames();
-        let start = start.min(frames);
-        let end = end.min(frames);
-        let length = end.saturating_sub(start);
-        if length == 0 {
-            app.status = String::from("Selection is empty.");
-            return Task::none();
-        }
-        let region = AudioRegion {
-            offset: start,
-            length,
-        };
-        apply_edit_to_samples(&mut audio.samples, audio.channels, region, operation);
-        match operation {
-            EditOperation::FadeIn => app.status = String::from("Fade in applied to selection."),
-            EditOperation::FadeOut => app.status = String::from("Fade out applied to selection."),
-            EditOperation::IncreaseVolume | EditOperation::DecreaseVolume => {
-                app.status = String::from("Volume adjusted on selection.")
-            }
-        }
-    } else {
-        match operation {
-            EditOperation::FadeIn => {
-                audio.edits.fade_in_samples = default_fade_samples(audio.frames());
-                app.status = String::from("Fade in applied to preview.");
-            }
-            EditOperation::FadeOut => {
-                audio.edits.fade_out_samples = default_fade_samples(audio.frames());
-                app.status = String::from("Fade out applied to preview.");
-            }
-            EditOperation::IncreaseVolume => {
-                audio.edits.gain_db = (audio.edits.gain_db + 1.0).min(24.0);
-                app.status = format!("Preview gain: {:+.1} dB.", audio.edits.gain_db);
-            }
-            EditOperation::DecreaseVolume => {
-                audio.edits.gain_db = (audio.edits.gain_db - 1.0).max(-48.0);
-                app.status = format!("Preview gain: {:+.1} dB.", audio.edits.gain_db);
-            }
+fn dispatch_audio_edit(app: &mut EditApp, message: Message) -> Task<Message> {
+    match audio_edit_action_for_message(app, &message) {
+        Some(action) => apply_standalone_audio_edit_action(app, action),
+        None => {
+            app.status = String::from("No audio file is open.");
+            Task::none()
         }
     }
-    app.history.record(
-        previous_snapshot,
-        DocumentSnapshot {
-            samples: audio.samples.clone(),
-            edits: audio.edits,
-            markers: audio.markers.clone(),
-        },
-    );
-    audio.rebuild_preview();
-    prepare_document_track(app)
 }
 
-fn reverse_clip(app: &mut EditApp) -> Task<Message> {
+fn apply_standalone_audio_edit_action(app: &mut EditApp, action: AudioEditAction) -> Task<Message> {
     let Some(audio) = app.audio.as_mut() else {
         app.status = String::from("No audio file is open.");
         return Task::none();
     };
 
+    if action.is_empty_for_frames(audio.frames()) {
+        app.status = String::from("Selection is empty.");
+        return Task::none();
+    }
+
     let previous_snapshot = DocumentSnapshot {
         samples: audio.samples.clone(),
         edits: audio.edits,
+        edit_actions: audio.edit_actions.clone(),
         markers: audio.markers.clone(),
     };
-    audio.edits.reversed = !audio.edits.reversed;
-    app.status = if audio.edits.reversed {
-        String::from("Clip reversed.")
-    } else {
-        String::from("Clip restored to forward playback.")
-    };
+
+    match action {
+        AudioEditAction::Delete {
+            start_sample,
+            length_samples,
+        } => {
+            delete_sample_range(audio, start_sample, length_samples);
+            app.selection_anchor_samples = None;
+            app.selection_samples = None;
+            app.status = format!(
+                "Deleted {}..{} samples.",
+                start_sample,
+                start_sample.saturating_add(length_samples)
+            );
+        }
+        _ => {
+            audio.edit_actions.push(action);
+            audio.edits = audio.edit_summary();
+            app.status = audio_edit_status(action, audio.edits, audio.frames());
+        }
+    }
+
     app.history.record(
         previous_snapshot,
         DocumentSnapshot {
             samples: audio.samples.clone(),
             edits: audio.edits,
+            edit_actions: audio.edit_actions.clone(),
             markers: audio.markers.clone(),
         },
     );
@@ -3249,24 +3424,20 @@ fn reverse_clip(app: &mut EditApp) -> Task<Message> {
 }
 
 fn delete_selection(app: &mut EditApp) -> Task<Message> {
-    let Some(audio) = app.audio.as_mut() else {
-        return Task::none();
-    };
-    let Some((start, end)) = app.selection_samples else {
-        return Task::none();
-    };
-    if start >= end || end > audio.frames() {
-        return Task::none();
+    match audio_edit_action_for_message(app, &Message::DeleteSelection) {
+        Some(action) => apply_standalone_audio_edit_action(app, action),
+        None => Task::none(),
     }
+}
 
-    let previous_snapshot = DocumentSnapshot {
-        samples: audio.samples.clone(),
-        edits: audio.edits,
-        markers: audio.markers.clone(),
-    };
+fn delete_sample_range(audio: &mut AudioDocument, start: usize, length: usize) {
+    let end = start.saturating_add(length).min(audio.frames());
+    if start >= end {
+        return;
+    }
     let channels = audio.channels.max(1);
     let sample_start = start * channels;
-    let sample_end = end.min(audio.frames()) * channels;
+    let sample_end = end * channels;
     audio.samples.drain(sample_start..sample_end);
 
     if let Some(region) = audio.clip_region.as_mut() {
@@ -3274,9 +3445,7 @@ fn delete_selection(app: &mut EditApp) -> Task<Message> {
         let region_end = region.offset + region.length;
         if end <= region_start {
             region.offset = region.offset.saturating_sub(end - start);
-        } else if start >= region_end {
-            // Region is entirely before the deleted range; no change.
-        } else {
+        } else if start < region_end {
             let delete_start = start.max(region_start);
             let delete_end = end.min(region_end);
             let deleted_in_region = delete_end.saturating_sub(delete_start);
@@ -3299,29 +3468,16 @@ fn delete_selection(app: &mut EditApp) -> Task<Message> {
             *sample = sample.saturating_sub(deleted_frames);
         }
     }
-
-    app.selection_anchor_samples = None;
-    app.selection_samples = None;
-    app.status = format!("Deleted {}..{} samples.", start, end);
-
-    app.history.record(
-        previous_snapshot,
-        DocumentSnapshot {
-            samples: audio.samples.clone(),
-            edits: audio.edits,
-            markers: audio.markers.clone(),
-        },
-    );
-    audio.rebuild_preview();
-    prepare_document_track(app)
 }
 
 fn restore_document(audio: &mut AudioDocument, snapshot: DocumentSnapshot) {
     audio.samples = snapshot.samples;
     audio.edits = snapshot.edits;
+    audio.edit_actions = snapshot.edit_actions;
     audio.markers = snapshot.markers;
 }
 
+#[cfg(test)]
 fn apply_edit_to_samples(
     samples: &mut [f32],
     channels: usize,
@@ -3391,40 +3547,133 @@ fn reverse_samples(samples: &[f32], channels: usize) -> Vec<f32> {
     output
 }
 
-fn render_preview_samples(samples: &[f32], channels: usize, edits: AudioEdits) -> Vec<f32> {
-    let edited = apply_edits(samples, channels, edits);
-    if edits.reversed {
-        reverse_samples(&edited, channels)
-    } else {
-        edited
+fn render_preview_samples(
+    samples: &[f32],
+    channels: usize,
+    actions: &[AudioEditAction],
+) -> Vec<f32> {
+    apply_audio_edit_actions(samples, channels, actions)
+}
+
+pub fn apply_audio_edit_actions(
+    samples: &[f32],
+    channels: usize,
+    actions: &[AudioEditAction],
+) -> Vec<f32> {
+    let channels = channels.max(1);
+    let mut output = samples.to_vec();
+    for action in actions {
+        apply_audio_edit_action_to_samples(&mut output, channels, *action);
+    }
+    output
+}
+
+pub fn apply_audio_edit_action_to_samples(
+    samples: &mut Vec<f32>,
+    channels: usize,
+    action: AudioEditAction,
+) {
+    let channels = channels.max(1);
+    match action {
+        AudioEditAction::Reverse => {
+            *samples = reverse_samples(samples, channels);
+        }
+        AudioEditAction::Delete {
+            start_sample,
+            length_samples,
+        } => {
+            let frames = samples.len() / channels;
+            let start = start_sample.min(frames);
+            let end = start.saturating_add(length_samples).min(frames);
+            if start < end {
+                samples.drain(start * channels..end * channels);
+            }
+        }
+        AudioEditAction::ReplaceWithSilence {
+            start_sample,
+            length_samples,
+        } => {
+            apply_region(
+                samples,
+                channels,
+                start_sample,
+                length_samples,
+                |_frame, sample| {
+                    *sample = 0.0;
+                },
+            );
+        }
+        AudioEditAction::FadeIn {
+            start_sample,
+            length_samples,
+        } => {
+            apply_region(
+                samples,
+                channels,
+                start_sample,
+                length_samples,
+                |pos, sample| {
+                    let envelope = pos as f32 / length_samples.max(1) as f32;
+                    *sample *= envelope;
+                },
+            );
+        }
+        AudioEditAction::FadeOut {
+            start_sample,
+            length_samples,
+        } => {
+            apply_region(
+                samples,
+                channels,
+                start_sample,
+                length_samples,
+                |pos, sample| {
+                    let envelope = (length_samples.saturating_sub(pos + 1) as f32
+                        / length_samples.max(1) as f32)
+                        .clamp(0.0, 1.0);
+                    *sample *= envelope;
+                },
+            );
+        }
+        AudioEditAction::GainDb {
+            start_sample,
+            length_samples,
+            delta_db,
+        } => {
+            let gain = 10.0f32.powf(delta_db / 20.0);
+            apply_region(
+                samples,
+                channels,
+                start_sample,
+                length_samples,
+                |_pos, sample| {
+                    *sample = (*sample * gain).clamp(-1.0, 1.0);
+                },
+            );
+        }
     }
 }
 
-fn apply_edits(samples: &[f32], channels: usize, edits: AudioEdits) -> Vec<f32> {
+fn apply_region(
+    samples: &mut [f32],
+    channels: usize,
+    start_sample: usize,
+    length_samples: usize,
+    mut f: impl FnMut(usize, &mut f32),
+) {
     let channels = channels.max(1);
     let frames = samples.len() / channels;
-    let gain = 10.0f32.powf(edits.gain_db / 20.0);
-    let mut output = samples.to_vec();
-
-    for frame in 0..frames {
-        let mut envelope = 1.0f32;
-        if edits.fade_in_samples > 0 && frame < edits.fade_in_samples {
-            envelope *= frame as f32 / edits.fade_in_samples as f32;
-        }
-        if edits.fade_out_samples > 0 {
-            let fade_start = frames.saturating_sub(edits.fade_out_samples);
-            if frame >= fade_start {
-                envelope *= (frames.saturating_sub(frame) as f32 / edits.fade_out_samples as f32)
-                    .clamp(0.0, 1.0);
-            }
-        }
+    let start = start_sample.min(frames);
+    let end = start.saturating_add(length_samples).min(frames);
+    if start >= end {
+        return;
+    }
+    for frame in start..end {
+        let pos = frame - start;
         for channel in 0..channels {
-            let index = frame * channels + channel;
-            output[index] = (output[index] * envelope * gain).clamp(-1.0, 1.0);
+            f(pos, &mut samples[frame * channels + channel]);
         }
     }
-
-    output
 }
 
 fn peak(samples: &[f32]) -> f32 {
@@ -3630,7 +3879,7 @@ fn prepare_document_track(app: &mut EditApp) -> Task<Message> {
     };
     let client = playback.client.clone();
     let path = audio.source_path.clone();
-    let samples = apply_edits(&audio.samples, audio.channels, audio.edits);
+    let samples = apply_audio_edit_actions(&audio.samples, audio.channels, &audio.edit_actions);
     let channels = audio.channels;
     let sample_rate = audio.sample_rate;
     let clip_len = audio.frames();
@@ -4688,6 +4937,7 @@ mod tests {
         let mut history = EditHistory::new(DocumentSnapshot {
             samples: vec![1.0f32],
             edits: AudioEdits::default(),
+            edit_actions: Vec::new(),
             markers: Vec::new(),
         });
         assert!(!history.is_dirty());
@@ -4696,11 +4946,13 @@ mod tests {
             DocumentSnapshot {
                 samples: vec![1.0f32],
                 edits: AudioEdits::default(),
+                edit_actions: Vec::new(),
                 markers: Vec::new(),
             },
             DocumentSnapshot {
                 samples: vec![2.0f32],
                 edits: AudioEdits::default(),
+                edit_actions: Vec::new(),
                 markers: Vec::new(),
             },
         );
@@ -4715,17 +4967,20 @@ mod tests {
         let mut history = EditHistory::new(DocumentSnapshot {
             samples: vec![1.0f32],
             edits: AudioEdits::default(),
+            edit_actions: Vec::new(),
             markers: Vec::new(),
         });
         history.record(
             DocumentSnapshot {
                 samples: vec![1.0f32],
                 edits: AudioEdits::default(),
+                edit_actions: Vec::new(),
                 markers: Vec::new(),
             },
             DocumentSnapshot {
                 samples: vec![2.0f32],
                 edits: AudioEdits::default(),
+                edit_actions: Vec::new(),
                 markers: Vec::new(),
             },
         );
@@ -4733,11 +4988,13 @@ mod tests {
             DocumentSnapshot {
                 samples: vec![2.0f32],
                 edits: AudioEdits::default(),
+                edit_actions: Vec::new(),
                 markers: Vec::new(),
             },
             DocumentSnapshot {
                 samples: vec![3.0f32],
                 edits: AudioEdits::default(),
+                edit_actions: Vec::new(),
                 markers: Vec::new(),
             },
         );
@@ -4758,17 +5015,20 @@ mod tests {
         let mut history = EditHistory::new(DocumentSnapshot {
             samples: vec![1.0f32],
             edits: AudioEdits::default(),
+            edit_actions: Vec::new(),
             markers: Vec::new(),
         });
         history.record(
             DocumentSnapshot {
                 samples: vec![1.0f32],
                 edits: AudioEdits::default(),
+                edit_actions: Vec::new(),
                 markers: Vec::new(),
             },
             DocumentSnapshot {
                 samples: vec![2.0f32],
                 edits: AudioEdits::default(),
+                edit_actions: Vec::new(),
                 markers: Vec::new(),
             },
         );
@@ -4777,11 +5037,13 @@ mod tests {
             DocumentSnapshot {
                 samples: vec![1.0f32],
                 edits: AudioEdits::default(),
+                edit_actions: Vec::new(),
                 markers: Vec::new(),
             },
             DocumentSnapshot {
                 samples: vec![3.0f32],
                 edits: AudioEdits::default(),
+                edit_actions: Vec::new(),
                 markers: Vec::new(),
             },
         );
@@ -4801,6 +5063,7 @@ mod tests {
             peak: 1.0,
             clip_region: None,
             edits: AudioEdits::default(),
+            edit_actions: Vec::new(),
             markers: Vec::new(),
         }
     }
