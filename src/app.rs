@@ -3788,6 +3788,7 @@ async fn prepare_engine_document(
             input_channel: 0,
             muted: false,
             reversed: request.reversed,
+            gain_db: 0.0,
             peaks_file: None,
             kind: Kind::Audio,
             fade_enabled: true,
