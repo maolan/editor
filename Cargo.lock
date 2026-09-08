@@ -2235,14 +2235,20 @@ dependencies = [
 
 [[package]]
 name = "maolan-editor"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "alsa",
  "maolan-engine",
  "maolan-widgets 0.0.37",
+ "oxideav-basic",
+ "oxideav-core",
+ "oxideav-flac",
+ "oxideav-mp3",
+ "oxideav-ogg",
  "rfd",
  "rubato",
  "serde_json",
+ "symphonia 0.6.1",
  "tokio",
  "toml",
 ]

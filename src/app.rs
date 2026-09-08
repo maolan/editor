@@ -1,20 +1,27 @@
+#[cfg(feature = "standalone")]
+use std::time::Instant;
 use std::{
     fmt,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
-use maolan_engine::audio_codec::{
+#[cfg(feature = "standalone")]
+use crate::audio_codec::{
     AudioDither, AudioEncodeFormat, WavBitDepth, decode_audio_to_f32_interleaved_sync,
     encode_audio_to_file,
 };
+#[cfg(feature = "standalone")]
 use maolan_engine::{
     client::Client as EngineClient,
-    history::{History as EngineHistory, UndoEntry},
     kind::Kind,
     message::{Action as EngineAction, Message as EngineMessage, generate_clip_id},
 };
+#[cfg(feature = "standalone")]
+type StandaloneOpenResult = EngineClient;
+#[cfg(not(feature = "standalone"))]
+type StandaloneOpenResult = ();
 use maolan_widgets::iced::{
     Background, Border, Color, Element, Length, Subscription, Task, Theme, keyboard, time,
     widget::{
@@ -34,7 +41,9 @@ use maolan_widgets::{
     menu::{menu_bar, menu_dropdown, menu_item, menu_items},
     meters,
 };
+#[cfg(feature = "standalone")]
 use rubato::audioadapter_buffers::direct::SequentialSliceOfVecs;
+#[cfg(feature = "standalone")]
 use rubato::{Fft, FixedSync, Resampler};
 
 #[derive(Debug, Clone)]
@@ -50,7 +59,7 @@ pub enum Message {
     StartupExclusiveToggled(bool),
     StartupSyncModeToggled(bool),
     StartupOpen,
-    StartupOpened(Result<EngineClient, String>),
+    StartupOpened(Result<StandaloneOpenResult, String>),
     Vst3PluginsLoaded,
     Vst3PluginsUnavailable,
     ClapPluginsLoaded,
@@ -87,6 +96,7 @@ pub enum Message {
     Redo,
     DeleteSelection,
     OpenPath(PathBuf),
+    OpenAudio(AudioBuffer),
     OpenClip {
         path: PathBuf,
         offset: usize,
@@ -162,6 +172,37 @@ pub struct HostPreview {
     pub start_sample: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct AudioBuffer {
+    pub name: String,
+    pub samples: Arc<Vec<f32>>,
+    pub channels: usize,
+    pub sample_rate: u32,
+}
+
+impl AudioBuffer {
+    pub fn new(
+        name: impl Into<String>,
+        samples: impl Into<Arc<Vec<f32>>>,
+        channels: usize,
+        sample_rate: u32,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            samples: samples.into(),
+            channels,
+            sample_rate,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RenderedAudio {
+    pub samples: Arc<Vec<f32>>,
+    pub channels: usize,
+    pub sample_rate: u32,
+}
+
 pub fn host_preview(app: &EditApp) -> Option<HostPreview> {
     let audio = app.audio.as_ref()?;
     Some(HostPreview {
@@ -173,6 +214,23 @@ pub fn host_preview(app: &EditApp) -> Option<HostPreview> {
 
 pub fn is_playing(app: &EditApp) -> bool {
     app.playing
+}
+
+pub fn rendered_audio(app: &EditApp) -> Option<RenderedAudio> {
+    let audio = app.audio.as_ref()?;
+    Some(RenderedAudio {
+        samples: Arc::new(audio.preview_samples.clone()),
+        channels: audio.channels,
+        sample_rate: audio.sample_rate,
+    })
+}
+
+pub fn current_audio_edits(app: &EditApp) -> Option<AudioEdits> {
+    app.audio.as_ref().map(|audio| audio.edits)
+}
+
+pub fn open_audio(app: &mut EditApp, audio: AudioBuffer) -> Task<Message> {
+    update(app, Message::OpenAudio(audio))
 }
 
 #[derive(Debug, Default)]
@@ -190,6 +248,7 @@ pub struct EditApp {
     selection_anchor_samples: Option<usize>,
     selection_samples: Option<(usize, usize)>,
     engine_clip_path: Option<PathBuf>,
+    #[cfg(feature = "standalone")]
     engine_playback: Option<EnginePlayback>,
     close_window_id: Option<window::Id>,
     marker_dialog: Option<MarkerDialog>,
@@ -265,6 +324,7 @@ impl fmt::Display for ExportFormat {
 impl ExportFormat {
     const ALL: &'static [Self] = &[Self::Wav, Self::Flac, Self::OggFlac, Self::Mp3];
 
+    #[cfg(feature = "standalone")]
     fn extension(self) -> &'static str {
         match self {
             Self::Wav => "wav",
@@ -296,6 +356,7 @@ impl fmt::Display for ExportBitDepth {
 impl ExportBitDepth {
     const ALL: &'static [Self] = &[Self::Bits16, Self::Bits24, Self::Bits32];
 
+    #[cfg(feature = "standalone")]
     fn bits(self) -> u16 {
         match self {
             Self::Bits16 => 16,
@@ -388,14 +449,15 @@ struct AudioRegion {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
-struct AudioEdits {
-    fade_in_samples: usize,
-    fade_out_samples: usize,
-    gain_db: f32,
-    reversed: bool,
+pub struct AudioEdits {
+    pub fade_in_samples: usize,
+    pub fade_out_samples: usize,
+    pub gain_db: f32,
+    pub reversed: bool,
 }
 
 impl AudioEdits {
+    #[cfg(feature = "standalone")]
     fn needs_rendered_preview_file(self) -> bool {
         self.fade_in_samples != 0 || self.fade_out_samples != 0 || self.gain_db != 0.0
     }
@@ -408,12 +470,19 @@ struct DocumentSnapshot {
     markers: Vec<(usize, String)>,
 }
 
-const EDIT_HISTORY_SOURCE: &str = "edit";
 const EDIT_HISTORY_MAX_ENTRIES: usize = 1000;
 
+#[derive(Default)]
 struct EditHistory {
-    history: EngineHistory,
+    undo_entries: Vec<UndoEntry>,
+    redo_entries: Vec<UndoEntry>,
+    saved_position: usize,
     snapshots: Vec<DocumentSnapshot>,
+}
+
+struct UndoEntry {
+    forward_snapshot: usize,
+    inverse_snapshot: usize,
 }
 
 impl std::fmt::Debug for EditHistory {
@@ -424,50 +493,50 @@ impl std::fmt::Debug for EditHistory {
     }
 }
 
-impl Default for EditHistory {
-    fn default() -> Self {
-        Self {
-            history: EngineHistory::new(EDIT_HISTORY_MAX_ENTRIES),
-            snapshots: Vec::new(),
-        }
-    }
-}
-
 impl EditHistory {
     fn new(initial: DocumentSnapshot) -> Self {
         Self {
-            history: EngineHistory::new(EDIT_HISTORY_MAX_ENTRIES),
+            undo_entries: Vec::new(),
+            redo_entries: Vec::new(),
+            saved_position: 0,
             snapshots: vec![initial],
         }
     }
 
     fn is_dirty(&self) -> bool {
-        self.history.is_dirty()
+        self.undo_entries.len() != self.saved_position
     }
 
     fn mark_saved(&mut self) {
-        self.history.mark_save_point();
+        self.saved_position = self.undo_entries.len();
     }
 
     fn record(&mut self, previous: DocumentSnapshot, current: DocumentSnapshot) {
         let previous_index = self.push_snapshot(previous);
         let current_index = self.push_snapshot(current);
-        self.history.record(UndoEntry {
-            forward_actions: vec![snapshot_action(current_index)],
-            inverse_actions: vec![snapshot_action(previous_index)],
+        self.undo_entries.push(UndoEntry {
+            forward_snapshot: current_index,
+            inverse_snapshot: previous_index,
         });
+        if self.undo_entries.len() > EDIT_HISTORY_MAX_ENTRIES {
+            self.undo_entries.remove(0);
+            self.saved_position = self.saved_position.saturating_sub(1);
+        }
+        self.redo_entries.clear();
     }
 
     fn undo(&mut self) -> Option<DocumentSnapshot> {
-        let actions = self.history.undo()?;
-        let index = parse_snapshot_index(&actions[0])?;
-        self.snapshots.get(index).cloned()
+        let entry = self.undo_entries.pop()?;
+        let snapshot = self.snapshots.get(entry.inverse_snapshot).cloned();
+        self.redo_entries.push(entry);
+        snapshot
     }
 
     fn redo(&mut self) -> Option<DocumentSnapshot> {
-        let actions = self.history.redo()?;
-        let index = parse_snapshot_index(&actions[0])?;
-        self.snapshots.get(index).cloned()
+        let entry = self.redo_entries.pop()?;
+        let snapshot = self.snapshots.get(entry.forward_snapshot).cloned();
+        self.undo_entries.push(entry);
+        snapshot
     }
 
     fn push_snapshot(&mut self, snapshot: DocumentSnapshot) -> usize {
@@ -477,27 +546,13 @@ impl EditHistory {
     }
 }
 
-fn snapshot_action(index: usize) -> EngineAction {
-    EngineAction::Log {
-        source: EDIT_HISTORY_SOURCE.to_string(),
-        message: index.to_string(),
-    }
-}
-
-fn parse_snapshot_index(action: &EngineAction) -> Option<usize> {
-    match action {
-        EngineAction::Log { source, message } if source == EDIT_HISTORY_SOURCE => {
-            message.parse().ok()
-        }
-        _ => None,
-    }
-}
-
+#[cfg(feature = "standalone")]
 #[derive(Debug)]
 struct EnginePlayback {
     client: EngineClient,
 }
 
+#[cfg(feature = "standalone")]
 struct EngineDocumentRequest {
     path: PathBuf,
     samples: Vec<f32>,
@@ -515,9 +570,9 @@ pub struct AudioDeviceOption {
     pub(crate) label: String,
     pub(crate) supported_bits: Vec<usize>,
     pub(crate) supported_sample_rates: Vec<i32>,
-    #[cfg(target_os = "freebsd")]
+    #[cfg(all(feature = "standalone", target_os = "freebsd"))]
     pub(crate) max_channels: usize,
-    #[cfg(target_os = "freebsd")]
+    #[cfg(all(feature = "standalone", target_os = "freebsd"))]
     pub(crate) max_buffer_bytes: usize,
     pub(crate) supports_input: bool,
     pub(crate) supports_output: bool,
@@ -554,16 +609,16 @@ impl AudioDeviceOption {
             label: label.into(),
             supported_bits,
             supported_sample_rates,
-            #[cfg(target_os = "freebsd")]
+            #[cfg(all(feature = "standalone", target_os = "freebsd"))]
             max_channels: 0,
-            #[cfg(target_os = "freebsd")]
+            #[cfg(all(feature = "standalone", target_os = "freebsd"))]
             max_buffer_bytes: 0,
             supports_input: true,
             supports_output: true,
         }
     }
 
-    #[cfg(target_os = "freebsd")]
+    #[cfg(all(feature = "standalone", target_os = "freebsd"))]
     pub(crate) fn with_oss_caps(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -607,7 +662,7 @@ impl AudioDeviceOption {
     }
 }
 
-#[cfg(target_os = "freebsd")]
+#[cfg(all(feature = "standalone", target_os = "freebsd"))]
 impl From<maolan_engine::audio_devices::AudioDeviceDescriptor> for AudioDeviceOption {
     fn from(device: maolan_engine::audio_devices::AudioDeviceDescriptor) -> Self {
         let mut out = Self::with_oss_caps(
@@ -912,6 +967,7 @@ fn pick_period_frames(setup: &StartupSetup) -> usize {
     }
 }
 
+#[cfg(feature = "standalone")]
 impl EditApp {
     fn plugins_loaded(&self) -> bool {
         let core = (self.vst3_plugins_loaded || self.vst3_plugins_unavailable)
@@ -927,6 +983,14 @@ impl EditApp {
     }
 }
 
+#[cfg(not(feature = "standalone"))]
+impl EditApp {
+    fn plugins_loaded(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(feature = "standalone")]
 pub fn new() -> (EditApp, Task<Message>) {
     let client = EngineClient::default();
     let scan_tasks = vec![
@@ -971,6 +1035,18 @@ pub fn new() -> (EditApp, Task<Message>) {
     )
 }
 
+#[cfg(not(feature = "standalone"))]
+pub fn new() -> (EditApp, Task<Message>) {
+    (
+        EditApp {
+            status: String::from("Open an audio file to view its waveform."),
+            ..EditApp::default()
+        },
+        Task::none(),
+    )
+}
+
+#[cfg(feature = "standalone")]
 #[derive(Debug, Clone, Copy)]
 enum PluginFormat {
     Vst3,
@@ -979,6 +1055,7 @@ enum PluginFormat {
     Lv2,
 }
 
+#[cfg(feature = "standalone")]
 async fn scan_plugins_startup(client: EngineClient, format: PluginFormat) -> bool {
     let mut rx = client.subscribe().await;
     let action = match format {
@@ -1081,15 +1158,30 @@ pub fn update(app: &mut EditApp, message: Message) -> Task<Message> {
         Message::StartupOpen => {
             app.busy = true;
             app.busy_progress = 0.0;
-            app.status = String::from("Scanning plugins and opening audio device...");
-            let setup = app.setup.clone();
-            Task::perform(open_standalone_engine(setup), Message::StartupOpened)
+            #[cfg(feature = "standalone")]
+            {
+                app.status = String::from("Scanning plugins and opening audio device...");
+                let setup = app.setup.clone();
+                Task::perform(open_standalone_engine(setup), Message::StartupOpened)
+            }
+            #[cfg(not(feature = "standalone"))]
+            {
+                app.status = String::from("Open an audio file to view its waveform.");
+                Task::perform(async { Ok(()) }, Message::StartupOpened)
+            }
         }
         Message::StartupOpened(Ok(client)) => {
             app.busy = false;
             app.busy_progress = 1.0;
             app.standalone_ready = true;
-            app.engine_playback = Some(EnginePlayback { client });
+            #[cfg(feature = "standalone")]
+            {
+                app.engine_playback = Some(EnginePlayback { client });
+            }
+            #[cfg(not(feature = "standalone"))]
+            {
+                let _ = client;
+            }
             app.status = String::from("Open an audio file to view its waveform.");
             Task::none()
         }
@@ -1126,83 +1218,121 @@ pub fn update(app: &mut EditApp, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::Open => {
-            app.busy = true;
-            app.busy_progress = 0.0;
-            app.status = String::from("Opening audio file...");
-            Task::perform(open_audio_dialog(), Message::FileOpened)
+            #[cfg(feature = "standalone")]
+            {
+                app.busy = true;
+                app.busy_progress = 0.0;
+                app.status = String::from("Opening audio file...");
+                Task::perform(open_audio_dialog(), Message::FileOpened)
+            }
+            #[cfg(not(feature = "standalone"))]
+            {
+                app.status = String::from("File loading is handled by the embedding host.");
+                Task::none()
+            }
         }
         Message::Close => {
-            let engine_playback = if app.standalone_ready {
-                app.engine_playback.take()
-            } else {
-                None
-            };
-            *app = EditApp {
-                status: String::from("Open an audio file to view its waveform."),
-                standalone_ready: app.standalone_ready,
-                setup: app.setup.clone(),
-                engine_playback,
-                ..EditApp::default()
-            };
+            reset_after_close(app);
             Task::none()
         }
-        Message::OpenPath(path) => load_document(app, path, None, None),
+        Message::OpenPath(path) => {
+            #[cfg(feature = "standalone")]
+            {
+                load_document(app, path, None, None)
+            }
+            #[cfg(not(feature = "standalone"))]
+            {
+                let _ = path;
+                app.status =
+                    String::from("File loading is only available in standalone editor builds.");
+                Task::none()
+            }
+        }
+        Message::OpenAudio(audio) => load_audio_buffer(app, audio, None),
         Message::OpenClip {
             path,
             offset,
             length,
             timeline_start,
-        } => load_document(
-            app,
-            path,
-            Some(AudioRegion { offset, length }),
-            timeline_start.map(|offset| AudioRegion { offset, length }),
-        ),
+        } => {
+            #[cfg(feature = "standalone")]
+            {
+                load_document(
+                    app,
+                    path,
+                    Some(AudioRegion { offset, length }),
+                    timeline_start.map(|offset| AudioRegion { offset, length }),
+                )
+            }
+            #[cfg(not(feature = "standalone"))]
+            {
+                let _ = (path, offset, length, timeline_start);
+                app.status =
+                    String::from("File loading is only available in standalone editor builds.");
+                Task::none()
+            }
+        }
         Message::Save => {
-            if let Some(audio) = app.audio.as_ref() {
-                if let Some(path) = audio.save_path.clone() {
-                    if encode_format_for_path(&path).is_ok() {
-                        app.busy = true;
-                        app.busy_progress = 0.0;
-                        app.status = format!("Saving {}...", path.display());
-                        let samples = audio.rendered_save_samples();
-                        let channels = audio.channels;
-                        let sample_rate = audio.sample_rate;
-                        Task::perform(
-                            save_document(path, samples, channels, sample_rate),
-                            Message::DocumentSaved,
-                        )
+            #[cfg(feature = "standalone")]
+            {
+                if let Some(audio) = app.audio.as_ref() {
+                    if let Some(path) = audio.save_path.clone() {
+                        if encode_format_for_path(&path).is_ok() {
+                            app.busy = true;
+                            app.busy_progress = 0.0;
+                            app.status = format!("Saving {}...", path.display());
+                            let samples = audio.rendered_save_samples();
+                            let channels = audio.channels;
+                            let sample_rate = audio.sample_rate;
+                            Task::perform(
+                                save_document(path, samples, channels, sample_rate),
+                                Message::DocumentSaved,
+                            )
+                        } else {
+                            app.busy = true;
+                            app.busy_progress = 0.0;
+                            app.status = String::from("Choose a Maolan export format to save.");
+                            Task::perform(save_audio_dialog(Some(path)), Message::FileSaved)
+                        }
                     } else {
                         app.busy = true;
                         app.busy_progress = 0.0;
-                        app.status = String::from("Choose a Maolan export format to save.");
-                        Task::perform(save_audio_dialog(Some(path)), Message::FileSaved)
+                        app.status = String::from("Choose where to save this clip.");
+                        Task::perform(
+                            save_audio_dialog(Some(audio.source_path.clone())),
+                            Message::FileSaved,
+                        )
                     }
                 } else {
-                    app.busy = true;
-                    app.busy_progress = 0.0;
-                    app.status = String::from("Choose where to save this clip.");
-                    Task::perform(
-                        save_audio_dialog(Some(audio.source_path.clone())),
-                        Message::FileSaved,
-                    )
+                    app.status = String::from("No audio file is open.");
+                    Task::none()
                 }
-            } else {
-                app.status = String::from("No audio file is open.");
+            }
+            #[cfg(not(feature = "standalone"))]
+            {
+                app.status = String::from("Saving is handled by the embedding host.");
                 Task::none()
             }
         }
         Message::SaveAs => {
-            if let Some(audio) = app.audio.as_ref() {
-                app.busy = true;
-                app.busy_progress = 0.0;
-                app.status = String::from("Choosing save destination...");
-                Task::perform(
-                    save_audio_dialog(Some(audio.source_path.clone())),
-                    Message::FileSaved,
-                )
-            } else {
-                app.status = String::from("No audio file is open.");
+            #[cfg(feature = "standalone")]
+            {
+                if let Some(audio) = app.audio.as_ref() {
+                    app.busy = true;
+                    app.busy_progress = 0.0;
+                    app.status = String::from("Choosing save destination...");
+                    Task::perform(
+                        save_audio_dialog(Some(audio.source_path.clone())),
+                        Message::FileSaved,
+                    )
+                } else {
+                    app.status = String::from("No audio file is open.");
+                    Task::none()
+                }
+            }
+            #[cfg(not(feature = "standalone"))]
+            {
+                app.status = String::from("Saving is handled by the embedding host.");
                 Task::none()
             }
         }
@@ -1217,15 +1347,7 @@ pub fn update(app: &mut EditApp, message: Message) -> Task<Message> {
         Message::Stop => {
             app.playing = false;
             app.status = String::from("Stopped.");
-            if let Some(playback) = app.engine_playback.as_ref() {
-                let client = playback.client.clone();
-                Task::perform(
-                    async move { send_engine(&client, EngineAction::Stop).await },
-                    Message::StandalonePlaybackStopped,
-                )
-            } else {
-                Task::none()
-            }
+            stop_engine_playback(app)
         }
         Message::RewindToStart => {
             app.playhead_samples = 0;
@@ -1419,7 +1541,21 @@ pub fn update(app: &mut EditApp, message: Message) -> Task<Message> {
             }
         }
         Message::DeleteSelection => delete_selection(app),
-        Message::FileOpened(Some(path)) => load_document(app, path, None, None),
+        Message::FileOpened(Some(path)) => {
+            #[cfg(feature = "standalone")]
+            {
+                load_document(app, path, None, None)
+            }
+            #[cfg(not(feature = "standalone"))]
+            {
+                let _ = path;
+                app.busy = false;
+                app.busy_progress = 0.0;
+                app.status =
+                    String::from("File loading is only available in standalone editor builds.");
+                Task::none()
+            }
+        }
         Message::FileOpened(None) => {
             app.busy = false;
             app.busy_progress = 0.0;
@@ -1468,22 +1604,33 @@ pub fn update(app: &mut EditApp, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::FileSaved(Some(path)) => {
-            let Some(audio) = app.audio.as_ref() else {
+            #[cfg(feature = "standalone")]
+            {
+                let Some(audio) = app.audio.as_ref() else {
+                    app.busy = false;
+                    app.busy_progress = 0.0;
+                    app.status = String::from("No audio file is open.");
+                    return Task::none();
+                };
+                app.busy = true;
+                app.busy_progress = 0.0;
+                app.status = format!("Saving {}...", path.display());
+                let samples = audio.rendered_save_samples();
+                let channels = audio.channels;
+                let sample_rate = audio.sample_rate;
+                Task::perform(
+                    save_document(path, samples, channels, sample_rate),
+                    Message::DocumentSaved,
+                )
+            }
+            #[cfg(not(feature = "standalone"))]
+            {
+                let _ = path;
                 app.busy = false;
                 app.busy_progress = 0.0;
-                app.status = String::from("No audio file is open.");
-                return Task::none();
-            };
-            app.busy = true;
-            app.busy_progress = 0.0;
-            app.status = format!("Saving {}...", path.display());
-            let samples = audio.rendered_save_samples();
-            let channels = audio.channels;
-            let sample_rate = audio.sample_rate;
-            Task::perform(
-                save_document(path, samples, channels, sample_rate),
-                Message::DocumentSaved,
-            )
+                app.status = String::from("Saving is handled by the embedding host.");
+                Task::none()
+            }
         }
         Message::FileSaved(None) => {
             app.busy = false;
@@ -1641,16 +1788,25 @@ pub fn update(app: &mut EditApp, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::ExportMarkersDialog => {
-            let task = if app.export_markers_dialog.is_some() {
-                Task::perform(
-                    choose_export_directory(),
-                    Message::ExportMarkersDirectorySelected,
-                )
-            } else {
+            #[cfg(feature = "standalone")]
+            {
+                let task = if app.export_markers_dialog.is_some() {
+                    Task::perform(
+                        choose_export_directory(),
+                        Message::ExportMarkersDirectorySelected,
+                    )
+                } else {
+                    Task::none()
+                };
+                app.export_markers_dialog = Some(ExportMarkersDialog::default());
+                task
+            }
+            #[cfg(not(feature = "standalone"))]
+            {
+                app.status =
+                    String::from("Marker export is only available in standalone editor builds.");
                 Task::none()
-            };
-            app.export_markers_dialog = Some(ExportMarkersDialog::default());
-            task
+            }
         }
         Message::ExportMarkersDirectorySelected(directory) => {
             if let Some(dialog) = app.export_markers_dialog.as_mut() {
@@ -1677,35 +1833,45 @@ pub fn update(app: &mut EditApp, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::ExportMarkersConfirm => {
-            let Some(dialog) = app.export_markers_dialog.take() else {
-                return Task::none();
-            };
-            let Some(audio) = app.audio.as_ref() else {
-                app.status = String::from("No audio file is open.");
-                return Task::none();
-            };
-            let Some(directory) = dialog.directory else {
-                app.status = String::from("Choose an export directory.");
-                return Task::none();
-            };
-            if audio.markers.is_empty() {
-                app.status = String::from("No markers to export between.");
-                return Task::none();
+            #[cfg(feature = "standalone")]
+            {
+                let Some(dialog) = app.export_markers_dialog.take() else {
+                    return Task::none();
+                };
+                let Some(audio) = app.audio.as_ref() else {
+                    app.status = String::from("No audio file is open.");
+                    return Task::none();
+                };
+                let Some(directory) = dialog.directory else {
+                    app.status = String::from("Choose an export directory.");
+                    return Task::none();
+                };
+                if audio.markers.is_empty() {
+                    app.status = String::from("No markers to export between.");
+                    return Task::none();
+                }
+                app.busy = true;
+                app.busy_progress = 0.0;
+                app.status = String::from("Exporting marker ranges...");
+                let audio_clone = audio.clone();
+                Task::perform(
+                    export_marker_ranges(
+                        directory,
+                        audio_clone,
+                        dialog.format,
+                        dialog.bit_depth,
+                        dialog.sample_rate.value(),
+                    ),
+                    Message::ExportMarkersFinished,
+                )
             }
-            app.busy = true;
-            app.busy_progress = 0.0;
-            app.status = String::from("Exporting marker ranges...");
-            let audio_clone = audio.clone();
-            Task::perform(
-                export_marker_ranges(
-                    directory,
-                    audio_clone,
-                    dialog.format,
-                    dialog.bit_depth,
-                    dialog.sample_rate.value(),
-                ),
-                Message::ExportMarkersFinished,
-            )
+            #[cfg(not(feature = "standalone"))]
+            {
+                app.export_markers_dialog = None;
+                app.status =
+                    String::from("Marker export is only available in standalone editor builds.");
+                Task::none()
+            }
         }
         Message::ExportMarkersCancel => {
             app.export_markers_dialog = None;
@@ -2129,6 +2295,21 @@ fn toolbar_button_disabled<'a>(
     .into()
 }
 
+fn load_audio_buffer(
+    app: &mut EditApp,
+    audio: AudioBuffer,
+    region: Option<AudioRegion>,
+) -> Task<Message> {
+    app.busy = true;
+    app.busy_progress = 0.0;
+    app.status = format!("Opening {}...", audio.name);
+    Task::perform(
+        async move { AudioDocument::from_interleaved(audio, region) },
+        Message::DocumentLoaded,
+    )
+}
+
+#[cfg(feature = "standalone")]
 fn load_document(
     app: &mut EditApp,
     path: PathBuf,
@@ -2603,6 +2784,7 @@ fn backend_matches_device(engine: AudioEngineOption, device_id: &str) -> bool {
     }
 }
 
+#[cfg(feature = "standalone")]
 async fn save_document(
     path: PathBuf,
     samples: Vec<f32>,
@@ -2622,10 +2804,12 @@ async fn save_document(
     Ok(path)
 }
 
+#[cfg(feature = "standalone")]
 async fn choose_export_directory() -> Option<PathBuf> {
     rfd::FileDialog::new().pick_folder()
 }
 
+#[cfg(feature = "standalone")]
 async fn export_marker_ranges(
     directory: PathBuf,
     audio: AudioDocument,
@@ -2675,6 +2859,7 @@ async fn export_marker_ranges(
     Ok(total)
 }
 
+#[cfg(feature = "standalone")]
 fn marker_ranges(markers: &[(usize, String)], frames: usize) -> Vec<(usize, usize)> {
     let mut sorted: Vec<usize> = markers.iter().map(|(sample, _)| *sample).collect();
     sorted.sort_unstable();
@@ -2693,6 +2878,7 @@ fn marker_ranges(markers: &[(usize, String)], frames: usize) -> Vec<(usize, usiz
     ranges
 }
 
+#[cfg(feature = "standalone")]
 fn marker_range_samples(audio: &AudioDocument, start: usize, end: usize) -> Vec<f32> {
     let channels = audio.channels.max(1);
     let frames = audio.frames();
@@ -2704,6 +2890,7 @@ fn marker_range_samples(audio: &AudioDocument, start: usize, end: usize) -> Vec<
     audio.preview_samples[start * channels..end * channels].to_vec()
 }
 
+#[cfg(feature = "standalone")]
 fn export_encode_format(format: ExportFormat, bit_depth: ExportBitDepth) -> AudioEncodeFormat {
     match format {
         ExportFormat::Wav => AudioEncodeFormat::Wav(match bit_depth {
@@ -2717,10 +2904,12 @@ fn export_encode_format(format: ExportFormat, bit_depth: ExportBitDepth) -> Audi
     }
 }
 
+#[cfg(feature = "standalone")]
 fn export_filename(stem: &str, index: usize, extension: &str) -> String {
     format!("{stem}_{index:03}.{extension}")
 }
 
+#[cfg(feature = "standalone")]
 fn resample_interleaved(
     samples: &[f32],
     channels: usize,
@@ -2840,6 +3029,36 @@ fn detect_markers(
 }
 
 impl AudioDocument {
+    fn from_interleaved(audio: AudioBuffer, region: Option<AudioRegion>) -> Result<Self, String> {
+        let channels = audio.channels.max(1);
+        let sample_rate = audio.sample_rate.max(1);
+        let source_path = PathBuf::from(if audio.name.is_empty() {
+            String::from("embedded audio")
+        } else {
+            audio.name
+        });
+        let samples = clip_samples(audio.samples.as_ref(), channels, region);
+        let edits = AudioEdits::default();
+        let preview = render_preview_samples(&samples, channels, edits);
+        let channel_samples = deinterleave(&preview, channels);
+        let peak = peak(&preview);
+
+        Ok(Self {
+            source_path,
+            save_path: None,
+            samples,
+            preview_samples: preview,
+            channels,
+            sample_rate,
+            channel_samples,
+            peak,
+            clip_region: region,
+            edits,
+            markers: Vec::new(),
+        })
+    }
+
+    #[cfg(feature = "standalone")]
     fn open_with_progress<F>(
         path: PathBuf,
         region: Option<AudioRegion>,
@@ -2896,6 +3115,7 @@ impl AudioDocument {
         self.peak = peak(&preview);
     }
 
+    #[cfg(feature = "standalone")]
     fn rendered_save_samples(&self) -> Vec<f32> {
         render_preview_samples(&self.samples, self.channels, self.edits)
     }
@@ -3213,6 +3433,43 @@ fn peak(samples: &[f32]) -> f32 {
         .fold(0.0f32, |peak, sample| peak.max(sample.abs()))
 }
 
+fn reset_after_close(app: &mut EditApp) {
+    #[cfg(feature = "standalone")]
+    let engine_playback = if app.standalone_ready {
+        app.engine_playback.take()
+    } else {
+        None
+    };
+
+    *app = EditApp {
+        status: String::from("Open an audio file to view its waveform."),
+        standalone_ready: app.standalone_ready,
+        setup: app.setup.clone(),
+        #[cfg(feature = "standalone")]
+        engine_playback,
+        ..EditApp::default()
+    };
+}
+
+#[cfg(feature = "standalone")]
+fn stop_engine_playback(app: &EditApp) -> Task<Message> {
+    if let Some(playback) = app.engine_playback.as_ref() {
+        let client = playback.client.clone();
+        Task::perform(
+            async move { send_engine(&client, EngineAction::Stop).await },
+            Message::StandalonePlaybackStopped,
+        )
+    } else {
+        Task::none()
+    }
+}
+
+#[cfg(not(feature = "standalone"))]
+fn stop_engine_playback(_app: &EditApp) -> Task<Message> {
+    Task::none()
+}
+
+#[cfg(feature = "standalone")]
 fn play_standalone(app: &mut EditApp) -> Task<Message> {
     if app.busy || app.preparing_playback {
         app.status = String::from("Preparing audio for playback.");
@@ -3248,6 +3505,27 @@ fn play_standalone(app: &mut EditApp) -> Task<Message> {
         async move { start_engine_playback(client, start).await },
         Message::StandalonePlaybackStarted,
     )
+}
+
+#[cfg(not(feature = "standalone"))]
+fn play_standalone(app: &mut EditApp) -> Task<Message> {
+    if app.busy || app.preparing_playback {
+        app.status = String::from("Preparing audio for playback.");
+        return Task::none();
+    }
+    if app.playing {
+        return Task::none();
+    }
+    let Some(audio) = app.audio.as_ref() else {
+        app.status = String::from("No audio file is open.");
+        return Task::none();
+    };
+    app.playing = true;
+    app.status = String::from("Playing preview.");
+    if app.playhead_samples >= audio.frames() {
+        app.playhead_samples = 0;
+    }
+    Task::none()
 }
 
 fn refresh_standalone_playhead(app: &mut EditApp) -> bool {
@@ -3342,6 +3620,7 @@ pub fn vu_levels_db(app: &EditApp) -> Vec<f32> {
         .collect()
 }
 
+#[cfg(feature = "standalone")]
 fn prepare_document_track(app: &mut EditApp) -> Task<Message> {
     if !app.standalone_ready {
         return Task::none();
@@ -3384,6 +3663,12 @@ fn prepare_document_track(app: &mut EditApp) -> Task<Message> {
     )
 }
 
+#[cfg(not(feature = "standalone"))]
+fn prepare_document_track(_app: &mut EditApp) -> Task<Message> {
+    Task::none()
+}
+
+#[cfg(feature = "standalone")]
 async fn open_standalone_engine(setup: StartupSetup) -> Result<EngineClient, String> {
     let client = EngineClient::default();
     let mut rx = client.subscribe().await;
@@ -3414,6 +3699,7 @@ async fn open_standalone_engine(setup: StartupSetup) -> Result<EngineClient, Str
     Ok(client)
 }
 
+#[cfg(feature = "standalone")]
 async fn scan_plugins(
     client: &EngineClient,
     rx: &mut tokio::sync::mpsc::Receiver<EngineMessage>,
@@ -3450,6 +3736,7 @@ async fn scan_plugins(
     Ok(())
 }
 
+#[cfg(feature = "standalone")]
 async fn prepare_engine_document(
     client: EngineClient,
     request: EngineDocumentRequest,
@@ -3558,6 +3845,7 @@ async fn prepare_engine_document(
     Ok(())
 }
 
+#[cfg(feature = "standalone")]
 async fn start_engine_playback(client: EngineClient, start: usize) -> Result<(), String> {
     let mut rx = client.subscribe().await;
     send_engine(&client, EngineAction::SetClipPlaybackEnabled(true)).await?;
@@ -3571,6 +3859,7 @@ async fn start_engine_playback(client: EngineClient, start: usize) -> Result<(),
     Ok(())
 }
 
+#[cfg(feature = "standalone")]
 fn selected_output_device(setup: &StartupSetup) -> String {
     if setup.audio_engine.is_jack() {
         String::from("jack")
@@ -3583,6 +3872,7 @@ fn selected_output_device(setup: &StartupSetup) -> String {
     }
 }
 
+#[cfg(feature = "standalone")]
 fn selected_input_device(setup: &StartupSetup) -> Option<String> {
     if setup.audio_engine.is_jack() {
         None
@@ -3591,6 +3881,7 @@ fn selected_input_device(setup: &StartupSetup) -> Option<String> {
     }
 }
 
+#[cfg(feature = "standalone")]
 fn selected_bits(setup: &StartupSetup) -> i32 {
     if setup.audio_engine.is_jack() {
         32
@@ -3599,6 +3890,7 @@ fn selected_bits(setup: &StartupSetup) -> i32 {
     }
 }
 
+#[cfg(feature = "standalone")]
 fn selected_period_frames(setup: &StartupSetup) -> usize {
     let options = period_frame_options(setup);
     if options.contains(&setup.period_frames) {
@@ -3613,7 +3905,7 @@ fn selected_period_frames(setup: &StartupSetup) -> usize {
     }
 }
 
-#[cfg(target_os = "freebsd")]
+#[cfg(all(feature = "standalone", target_os = "freebsd"))]
 fn period_frame_options(setup: &StartupSetup) -> Vec<usize> {
     if !setup.audio_engine.is_jack()
         && let Some(device) = setup.output_device.as_ref()
@@ -3624,7 +3916,7 @@ fn period_frame_options(setup: &StartupSetup) -> Vec<usize> {
     default_period_frame_options()
 }
 
-#[cfg(not(target_os = "freebsd"))]
+#[cfg(any(not(feature = "standalone"), not(target_os = "freebsd")))]
 fn period_frame_options(_setup: &StartupSetup) -> Vec<usize> {
     default_period_frame_options()
 }
@@ -3635,7 +3927,7 @@ fn default_period_frame_options() -> Vec<usize> {
     ]
 }
 
-#[cfg(target_os = "freebsd")]
+#[cfg(all(feature = "standalone", target_os = "freebsd"))]
 fn oss_period_frame_options(device: &AudioDeviceOption, bits: usize) -> Option<Vec<usize>> {
     if device.max_channels == 0 || device.max_buffer_bytes == 0 {
         return None;
@@ -3672,10 +3964,12 @@ fn oss_period_frame_options(device: &AudioDeviceOption, bits: usize) -> Option<V
     (!out.is_empty()).then_some(out)
 }
 
+#[cfg(feature = "standalone")]
 async fn send_engine(client: &EngineClient, action: EngineAction) -> Result<(), String> {
     client.send(EngineMessage::Request(action)).await
 }
 
+#[cfg(feature = "standalone")]
 async fn wait_for_engine_response(
     rx: &mut tokio::sync::mpsc::Receiver<EngineMessage>,
     mut accepts: impl FnMut(&EngineAction) -> bool,
@@ -3702,6 +3996,7 @@ async fn wait_for_engine_response(
     }
 }
 
+#[cfg(feature = "standalone")]
 fn preview_path(source: &Path) -> PathBuf {
     let mut path = std::env::temp_dir();
     let stem = source
@@ -3755,6 +4050,7 @@ fn discover_input_audio_devices(engine: AudioEngineOption) -> Vec<AudioDeviceOpt
     devices
 }
 
+#[cfg(feature = "standalone")]
 fn platform_audio_devices() -> Vec<AudioDeviceOption> {
     #[cfg(target_os = "freebsd")]
     {
@@ -3791,7 +4087,12 @@ fn platform_audio_devices() -> Vec<AudioDeviceOption> {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(not(feature = "standalone"))]
+fn platform_audio_devices() -> Vec<AudioDeviceOption> {
+    vec![simple_audio_device("default")]
+}
+
+#[cfg(all(feature = "standalone", target_os = "linux"))]
 mod platform_linux {
     use alsa::{
         Direction,
@@ -4083,6 +4384,7 @@ fn default_audio_device(engine: AudioEngineOption) -> &'static str {
     }
 }
 
+#[cfg(feature = "standalone")]
 async fn open_audio_dialog() -> Option<PathBuf> {
     rfd::FileDialog::new()
         .add_filter(
@@ -4092,6 +4394,7 @@ async fn open_audio_dialog() -> Option<PathBuf> {
         .pick_file()
 }
 
+#[cfg(feature = "standalone")]
 async fn save_audio_dialog(current: Option<PathBuf>) -> Option<PathBuf> {
     let mut dialog =
         rfd::FileDialog::new().add_filter("Maolan audio export", &["wav", "flac", "mp3", "ogg"]);
@@ -4138,6 +4441,7 @@ fn deinterleave(samples: &[f32], channels: usize) -> Vec<Vec<f32>> {
     output
 }
 
+#[cfg(feature = "standalone")]
 fn encode_format_for_path(path: &Path) -> Result<AudioEncodeFormat, String> {
     let ext = path
         .extension()
@@ -4782,6 +5086,7 @@ mod tests {
         assert!(!app.history.is_dirty());
     }
 
+    #[cfg(feature = "standalone")]
     #[test]
     fn marker_ranges_split_at_sorted_markers() {
         let markers = vec![(50, "A".to_string()), (20, "B".to_string())];
@@ -4791,23 +5096,27 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "standalone")]
     #[test]
     fn marker_ranges_ignores_out_of_bounds_markers() {
         let markers = vec![(150, "A".to_string())];
         assert_eq!(marker_ranges(&markers, 100), vec![(0, 100)]);
     }
 
+    #[cfg(feature = "standalone")]
     #[test]
     fn marker_range_samples_extracts_interleaved_range() {
         let audio = test_document(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], 2);
         assert_eq!(marker_range_samples(&audio, 0, 2), vec![1.0, 2.0, 3.0, 4.0]);
     }
 
+    #[cfg(feature = "standalone")]
     #[test]
     fn export_filename_includes_index_and_extension() {
         assert_eq!(export_filename("track", 7, "wav"), "track_007.wav");
     }
 
+    #[cfg(feature = "standalone")]
     #[test]
     fn export_encode_format_maps_formats() {
         assert!(matches!(
@@ -4828,6 +5137,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "standalone")]
     #[test]
     fn resample_interleaved_identity_when_rates_match() {
         let samples = vec![0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6];
@@ -4835,6 +5145,7 @@ mod tests {
         assert_eq!(output, samples);
     }
 
+    #[cfg(feature = "standalone")]
     #[test]
     fn resample_interleaved_changes_length_when_rates_differ() {
         let samples: Vec<f32> = (0..960).map(|i| (i as f32 / 960.0).sin()).collect();
@@ -4843,6 +5154,7 @@ mod tests {
         assert!(output.len() < samples.len());
     }
 
+    #[cfg(feature = "standalone")]
     #[tokio::test]
     async fn export_marker_ranges_creates_files() {
         let dir = std::env::temp_dir().join(format!(
