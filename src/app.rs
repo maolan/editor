@@ -3938,6 +3938,8 @@ async fn open_standalone_engine(setup: StartupSetup) -> Result<EngineClient, Str
             input_channels: 0,
             output_channels: 0,
             bytes_per_frame: 0,
+            ring_buffer_multiplier: 8,
+            auto_open_midi_devices: false,
         },
     )
     .await?;
@@ -4051,6 +4053,8 @@ async fn prepare_engine_document(
             pitch_correction_frame_likeness: None,
             pitch_correction_inertia_ms: None,
             pitch_correction_formant_compensation: None,
+            pitch_correction_detector: maolan_engine::message::PitchCorrectionDetector::Classic,
+            pitch_correction_mode: maolan_engine::message::PitchCorrectionMode::Shift,
             plugin_graph_json: None,
         },
     )
