@@ -2235,7 +2235,7 @@ dependencies = [
 
 [[package]]
 name = "maolan-editor"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "alsa",
  "maolan-engine",
@@ -2256,9 +2256,9 @@ dependencies = [
 
 [[package]]
 name = "maolan-engine"
-version = "0.3.5"
+version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04d7f008a2f0f60b4c49e32b1dbcf267023ff39670ed6ca26dcf3605f6bddbc8"
+checksum = "66465a8c85ad1face15cac857a8cab29e4a6df858553e19ffb5d8db59bd52df2"
 dependencies = [
  "alsa",
  "arc-swap",
@@ -2267,6 +2267,7 @@ dependencies = [
  "basedrop",
  "byteorder",
  "jack",
+ "libc",
  "maolan-plugin-protocol",
  "midly",
  "mixosc",
@@ -2294,9 +2295,9 @@ dependencies = [
 
 [[package]]
 name = "maolan-plugin-protocol"
-version = "0.0.18"
+version = "0.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6af015d8fdef7bba3f7149de0fea0536a825d62ceca5ce15b27397f2fc9c9dc4"
+checksum = "fdb1ec17e8bde7626740fcc55f9273cc8d477f5b557ede885c26e4d913b342af"
 dependencies = [
  "libc",
  "tracing",
@@ -2711,9 +2712,9 @@ dependencies = [
 
 [[package]]
 name = "nvtree"
-version = "0.0.2"
+version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6c6b57855e3bad4ab9449abb49c72351fd72e261232c6e856e8424137bd4a95"
+checksum = "787dbd53eccebdaa2d6f1f2e8383fe77f5cdef5a450d03675236d673a595944f"
 
 [[package]]
 name = "objc"
