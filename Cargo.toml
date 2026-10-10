@@ -1,6 +1,6 @@
 [package]
 name = "maolan-editor"
-version = "0.0.11"
+version = "0.0.12"
 edition = "2024"
 description = "Simple audio editor for Maolan audio files"
 license = "BSD-2-Clause"
@@ -29,7 +29,7 @@ standalone = [
 ]
 
 [dependencies]
-maolan-engine = { version = "0.3.9", optional = true }
+maolan-engine = { version = "0.3.24", optional = true }
 oxideav-core = { version = "0.1.35", optional = true }
 oxideav-basic = { version = "0.0.10", optional = true }
 oxideav-flac = { version = "0.0.11", optional = true }
@@ -49,3 +49,35 @@ alsa = { version = "0.12.1", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1.48.0", features = ["rt", "macros"] }
+
+[package.metadata.deb]
+name = "maolan-editor"
+maintainer = "Maolan Team <studio@maolan.rs>"
+section = "sound"
+priority = "optional"
+copyright = "2026, Maolan Team <studio@maolan.rs>"
+depends = "jackd2 | pipewire-jack, libasound2t64 | libasound2"
+assets = [
+  ["target/release/maolan-editor", "usr/bin/", "755"],
+  ["assets/desktop/maolan-editor-linux.desktop", "usr/share/applications/maolan-editor.desktop", "644"],
+  ["assets/images/maolan-editor-icon.svg", "usr/share/icons/hicolor/scalable/apps/maolan-editor-icon.svg", "644"],
+  ["README.md", "usr/share/doc/maolan-editor/", "644"],
+  ["LICENSE", "usr/share/doc/maolan-editor/", "644"],
+]
+
+[package.metadata.generate-rpm.requires]
+"(jack-audio-connection-kit or pipewire-jack-audio-connection-kit)" = "*"
+"alsa-lib" = "*"
+
+[package.metadata.generate-rpm]
+name = "maolan-editor"
+summary = "Simple audio editor for Maolan audio files"
+license = "BSD-2-Clause"
+url = "https://github.com/maolan/edit"
+assets = [
+  { source = "target/release/maolan-editor", dest = "/usr/bin/maolan-editor", mode = "755" },
+  { source = "assets/desktop/maolan-editor-linux.desktop", dest = "/usr/share/applications/maolan-editor.desktop", mode = "644" },
+  { source = "assets/images/maolan-editor-icon.svg", dest = "/usr/share/icons/hicolor/scalable/apps/maolan-editor-icon.svg", mode = "644" },
+  { source = "README.md", dest = "/usr/share/doc/maolan-editor/README.md", mode = "644" },
+  { source = "LICENSE", dest = "/usr/share/doc/maolan-editor/LICENSE", mode = "644" },
+]

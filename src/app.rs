@@ -47,6 +47,13 @@ pub use crate::view::{
     standalone_menu, toolbar, toolbar_with_playhead, view,
 };
 
+pub fn has_open_dialog(app: &EditApp) -> bool {
+    app.marker_dialog.is_some()
+        || app.detect_markers_dialog.is_some()
+        || app.export_markers_dialog.is_some()
+        || app.preferences_dialog.is_some()
+}
+
 pub fn update(app: &mut EditApp, message: Message) -> Task<Message> {
     match message {
         Message::None => Task::none(),

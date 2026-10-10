@@ -86,6 +86,7 @@ pub(crate) async fn open_standalone_engine(setup: StartupSetup) -> Result<Engine
             period_frames: selected_period_frames(&setup),
             nperiods: setup.nperiods,
             sync_mode: setup.sync_mode,
+            io_latency_calibration: None,
             actual_period_frames: 0,
             input_channels: 0,
             output_channels: 0,
