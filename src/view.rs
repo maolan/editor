@@ -511,18 +511,18 @@ fn startup_view(app: &EditApp) -> Element<'_, Message> {
         .into()
 }
 
-fn backend_matches_device(engine: AudioEngineOption, device_id: &str) -> bool {
+fn backend_matches_device(engine: AudioEngineOption, _device_id: &str) -> bool {
     match engine {
         #[cfg(unix)]
         AudioEngineOption::Jack => false,
         #[cfg(target_os = "freebsd")]
-        AudioEngineOption::Oss => device_id.starts_with("/dev/dsp"),
+        AudioEngineOption::Oss => _device_id.starts_with("/dev/dsp"),
         #[cfg(target_os = "openbsd")]
-        AudioEngineOption::Sndio => !device_id.is_empty(),
+        AudioEngineOption::Sndio => !_device_id.is_empty(),
         #[cfg(target_os = "linux")]
-        AudioEngineOption::Alsa => device_id.starts_with("hw:"),
+        AudioEngineOption::Alsa => _device_id.starts_with("hw:"),
         #[cfg(target_os = "windows")]
-        AudioEngineOption::Wasapi => device_id.starts_with("wasapi:"),
+        AudioEngineOption::Wasapi => _device_id.starts_with("wasapi:"),
     }
 }
 
