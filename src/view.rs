@@ -5,7 +5,7 @@ use maolan_widgets::iced::{
 use maolan_widgets::iced_aw::menu::DrawPath;
 use maolan_widgets::iced_fonts::lucide::{
     arrow_down, arrow_right, arrow_up, fast_forward, flag, play, redo, rewind, square,
-    trending_down, trending_up, undo,
+    trending_down, trending_up, undo, x,
 };
 use maolan_widgets::waveform::SampleWaveform;
 use maolan_widgets::{
@@ -63,6 +63,7 @@ fn view_with_chrome_options(
     show_vu_meter: bool,
     play_disabled: bool,
 ) -> Element<'_, Message> {
+    let show_close = !show_menu;
     let waveform: Element<'_, Message> = match app.audio.as_ref() {
         Some(audio) => {
             let markers = audio
@@ -120,7 +121,7 @@ fn view_with_chrome_options(
         content = content.push(standalone_menu());
     }
     if show_toolbar {
-        content = content.push(toolbar_for_app(app, play_disabled));
+        content = content.push(toolbar_for_app(app, play_disabled, show_close));
     }
     let mut content = content.push(waveform.width(Length::Fill).height(Length::Fill));
     if app.busy {
@@ -239,13 +240,14 @@ pub fn toolbar() -> Element<'static, Message> {
 }
 
 pub fn toolbar_with_playhead(label: impl Into<String>, playing: bool) -> Element<'static, Message> {
-    toolbar_with_playhead_options(label, playing, false)
+    toolbar_with_playhead_options(label, playing, false, false)
 }
 
 fn toolbar_with_playhead_options(
     label: impl Into<String>,
     playing: bool,
     play_disabled: bool,
+    show_close: bool,
 ) -> Element<'static, Message> {
     let label = label.into();
     let play_button = if play_disabled {
@@ -253,57 +255,63 @@ fn toolbar_with_playhead_options(
     } else {
         toolbar_button(play().size(16), "Play", Message::Play)
     };
-    container(
-        row![
-            toolbar_button(undo().size(16), "Undo", Message::Undo),
-            toolbar_button(redo().size(16), "Redo", Message::Redo),
-            toolbar_button(rewind().size(16), "Rewind to start", Message::RewindToStart),
-            play_button,
-            toolbar_button(square().size(16), "Stop", Message::Stop),
-            toolbar_button(fast_forward().size(16), "Go to end", Message::GoToEnd),
-            toolbar_button(
-                arrow_right().size(16),
-                "Next zero crossing",
-                Message::JumpToNextZeroCrossing
-            ),
-            container(text(label).size(14))
-                .padding([4, 8])
-                .style(if playing {
-                    playhead_active_style
-                } else {
-                    playhead_style
-                }),
-            toolbar_button(trending_up().size(16), "Fade in", Message::FadeIn),
-            toolbar_button(trending_down().size(16), "Fade out", Message::FadeOut),
-            toolbar_button(
-                flag().size(16),
-                "Detect markers",
-                Message::DetectMarkersDialog
-            ),
-            toolbar_button(
-                arrow_up().size(16),
-                "Increase volume",
-                Message::IncreaseVolume
-            ),
-            toolbar_button(
-                arrow_down().size(16),
-                "Decrease volume",
-                Message::DecreaseVolume
-            ),
-            Space::new().width(Length::Fill),
-        ]
-        .spacing(4)
-        .align_y(maolan_widgets::iced::Alignment::Center),
-    )
-    .width(Length::Fill)
-    .height(Length::Fixed(34.0))
-    .padding([4, 8])
-    .style(toolbar_style)
-    .into()
+    let mut buttons = row![
+        toolbar_button(undo().size(16), "Undo", Message::Undo),
+        toolbar_button(redo().size(16), "Redo", Message::Redo),
+        toolbar_button(rewind().size(16), "Rewind to start", Message::RewindToStart),
+        play_button,
+        toolbar_button(square().size(16), "Stop", Message::Stop),
+        toolbar_button(fast_forward().size(16), "Go to end", Message::GoToEnd),
+        toolbar_button(
+            arrow_right().size(16),
+            "Next zero crossing",
+            Message::JumpToNextZeroCrossing
+        ),
+        container(text(label).size(14))
+            .padding([4, 8])
+            .style(if playing {
+                playhead_active_style
+            } else {
+                playhead_style
+            }),
+        toolbar_button(trending_up().size(16), "Fade in", Message::FadeIn),
+        toolbar_button(trending_down().size(16), "Fade out", Message::FadeOut),
+        toolbar_button(
+            flag().size(16),
+            "Detect markers",
+            Message::DetectMarkersDialog
+        ),
+        toolbar_button(
+            arrow_up().size(16),
+            "Increase volume",
+            Message::IncreaseVolume
+        ),
+        toolbar_button(
+            arrow_down().size(16),
+            "Decrease volume",
+            Message::DecreaseVolume
+        ),
+        Space::new().width(Length::Fill),
+    ]
+    .spacing(4)
+    .align_y(maolan_widgets::iced::Alignment::Center);
+    if show_close {
+        buttons = buttons.push(toolbar_button(x().size(16), "Close editor", Message::Close));
+    }
+    container(buttons)
+        .width(Length::Fill)
+        .height(Length::Fixed(34.0))
+        .padding([4, 8])
+        .style(toolbar_style)
+        .into()
 }
 
-fn toolbar_for_app(app: &EditApp, play_disabled: bool) -> Element<'static, Message> {
-    toolbar_with_playhead_options(playhead_label(app), app.playing, play_disabled)
+fn toolbar_for_app(
+    app: &EditApp,
+    play_disabled: bool,
+    show_close: bool,
+) -> Element<'static, Message> {
+    toolbar_with_playhead_options(playhead_label(app), app.playing, play_disabled, show_close)
 }
 
 fn toolbar_button<'a>(

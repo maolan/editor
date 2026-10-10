@@ -2235,11 +2235,11 @@ dependencies = [
 
 [[package]]
 name = "maolan-editor"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "alsa",
  "maolan-engine",
- "maolan-widgets 0.0.39",
+ "maolan-widgets",
  "oxideav-basic",
  "oxideav-core",
  "oxideav-flac",
@@ -2256,21 +2256,21 @@ dependencies = [
 
 [[package]]
 name = "maolan-engine"
-version = "0.3.9"
+version = "0.3.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66465a8c85ad1face15cac857a8cab29e4a6df858553e19ffb5d8db59bd52df2"
+checksum = "b1220f175c1366044a52b02575709450d0a8baf050033f71be7af8ddf87bfcc0"
 dependencies = [
  "alsa",
  "arc-swap",
  "audioadapter",
  "audioadapter-buffers",
  "basedrop",
+ "block",
  "byteorder",
  "jack",
  "libc",
  "maolan-plugin-protocol",
  "midly",
- "mixosc",
  "nix",
  "num_cpus",
  "nvtree",
@@ -2295,27 +2295,13 @@ dependencies = [
 
 [[package]]
 name = "maolan-plugin-protocol"
-version = "0.0.19"
+version = "0.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdb1ec17e8bde7626740fcc55f9273cc8d477f5b557ede885c26e4d913b342af"
+checksum = "b0121a96c6d6bcdeb39d3ab7b005b076ea241ad6c5a0e7c644b942aab73f9d9f"
 dependencies = [
  "libc",
  "tracing",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "maolan-widgets"
-version = "0.0.35"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8201881f51e26aff699cf591f5fd243e1ecb3555bd3673263bfcf6684b91ed28"
-dependencies = [
- "iced",
- "iced_aw",
- "iced_drop",
- "iced_fonts",
- "serde",
- "symphonia 0.5.5",
 ]
 
 [[package]]
@@ -2419,16 +2405,6 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "mixosc"
-version = "0.0.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aeedb8f68326ded98233c8048331cd2fc9d385e5e4d656d31fe0ef07f481e279"
-dependencies = [
- "maolan-widgets 0.0.35",
- "tokio",
 ]
 
 [[package]]
@@ -2712,9 +2688,9 @@ dependencies = [
 
 [[package]]
 name = "nvtree"
-version = "0.0.4"
+version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "787dbd53eccebdaa2d6f1f2e8383fe77f5cdef5a450d03675236d673a595944f"
+checksum = "0ac4d8e5e45da879fe4e8c52082e0dd829847644bfedd2dce4711abb4fddb0bb"
 
 [[package]]
 name = "objc"
