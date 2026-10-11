@@ -84,8 +84,14 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: Run Clippy (embedded)
+        run: cargo clippy --all-targets --no-default-features --features embedded -- -D warnings
+
       - name: Run tests
         run: cargo test --all-targets
+
+      - name: Run tests (embedded)
+        run: cargo test --all-targets --no-default-features --features embedded
 
   build-release:
     if: ${{ inputs.release_build }}

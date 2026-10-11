@@ -71,7 +71,7 @@ impl AudioDeviceOption {
         out
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(feature = "standalone", target_os = "linux"))]
     pub(crate) fn with_supported_direction_caps(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -90,10 +90,6 @@ impl AudioDeviceOption {
             label: label.into(),
             supported_bits,
             supported_sample_rates,
-            #[cfg(target_os = "freebsd")]
-            max_channels: 0,
-            #[cfg(target_os = "freebsd")]
-            max_buffer_bytes: 0,
             supports_input,
             supports_output,
         }
