@@ -2235,12 +2235,12 @@ dependencies = [
 
 [[package]]
 name = "maolan-editor"
-version = "0.0.12"
+version = "0.1.0"
 dependencies = [
  "alsa",
  "maolan-engine",
  "maolan-widgets",
- "oxideav-basic",
+ "oxideav-basic 0.0.10",
  "oxideav-core",
  "oxideav-flac",
  "oxideav-mp3",
@@ -2256,9 +2256,9 @@ dependencies = [
 
 [[package]]
 name = "maolan-engine"
-version = "0.3.24"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1220f175c1366044a52b02575709450d0a8baf050033f71be7af8ddf87bfcc0"
+checksum = "4d0917448e03f47265125898d1972815f8fc16c28783635f024b7c7581275839"
 dependencies = [
  "alsa",
  "arc-swap",
@@ -2270,11 +2270,10 @@ dependencies = [
  "jack",
  "libc",
  "maolan-plugin-protocol",
- "midly",
  "nix",
  "num_cpus",
  "nvtree",
- "oxideav-basic",
+ "oxideav-basic 0.0.11",
  "oxideav-core",
  "oxideav-flac",
  "oxideav-mp3",
@@ -2365,15 +2364,6 @@ dependencies = [
  "log",
  "objc",
  "paste",
-]
-
-[[package]]
-name = "midly"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "207d755f4cb882d20c4da58d707ca9130a0c9bc5061f657a4f299b8e36362b7a"
-dependencies = [
- "rayon",
 ]
 
 [[package]]
@@ -3129,10 +3119,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "oxideav-core"
-version = "0.1.35"
+name = "oxideav-basic"
+version = "0.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f8d0295ab8f6482bb51419d9a89adcf145fa1e654b34d2566046134aed5c424"
+checksum = "c7969c668656223b44c2950e4d736fd870d70d3880bab6e5d27c92c3226fcbdc"
+dependencies = [
+ "oxideav-core",
+]
+
+[[package]]
+name = "oxideav-core"
+version = "0.1.39"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f49a13fc8a75d81fb4af6108bd67d080d52213ffa008340212246d543d63f982"
 dependencies = [
  "bytemuck",
  "serde_json",
