@@ -21,7 +21,11 @@ pub struct EditApp {
     pub(crate) preparing_playback: bool,
     pub(crate) busy_progress: f32,
     pub(crate) playing: bool,
+    pub(crate) loop_enabled: bool,
+    #[cfg(feature = "standalone")]
+    pub(crate) engine_loop_range: Option<Option<(usize, usize)>>,
     pub(crate) playhead_samples: usize,
+    pub(crate) xfade_samples: usize,
     pub(crate) selection_anchor_samples: Option<usize>,
     pub(crate) selection_samples: Option<(usize, usize)>,
     pub(crate) engine_clip_path: Option<std::path::PathBuf>,

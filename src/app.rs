@@ -24,7 +24,7 @@ use crate::markers::detect_markers;
 use crate::preferences::EditorPreferences;
 use crate::transport::{
     play_standalone, prepare_document_track, refresh_standalone_playhead, reset_after_close,
-    sample_at_ratio, selection_duration_seconds, stop_engine_playback,
+    sample_at_ratio, selection_duration_seconds, stop_engine_playback, sync_engine_loop,
 };
 
 pub use crate::devices::{AudioDeviceOption, AudioEngineOption};
@@ -39,8 +39,9 @@ pub use crate::shortcuts::subscription;
 pub use crate::state::{EditApp, new, title};
 pub use crate::transport::{
     HostPreview, RenderedAudio, audio_edit_action_for_message, current_audio_edit_actions,
-    current_audio_edits, host_preview, is_playing, open_audio, rendered_audio,
-    set_embedded_transport, vu_levels_db,
+    current_audio_edits, host_preview, is_playing, loop_enabled, loop_region, open_audio,
+    rendered_audio, set_embedded_loop, set_embedded_transport, set_embedded_xfade, vu_levels_db,
+    xfade_samples,
 };
 pub use crate::view::{
     embedded_view, embedded_view_with_play_disabled, embedded_view_without_vu_meter, menu,
@@ -55,6 +56,10 @@ pub fn has_open_dialog(app: &EditApp) -> bool {
 }
 
 pub fn update(app: &mut EditApp, message: Message) -> Task<Message> {
+    update_message(app, message).chain(sync_engine_loop(app))
+}
+
+fn update_message(app: &mut EditApp, message: Message) -> Task<Message> {
     match message {
         Message::None => Task::none(),
         Message::StartupBackendSelected(engine) => {
@@ -293,6 +298,15 @@ pub fn update(app: &mut EditApp, message: Message) -> Task<Message> {
                 update(app, Message::Play)
             }
         }
+        Message::ToggleLoop => {
+            app.loop_enabled = !app.loop_enabled;
+            app.status = if app.loop_enabled {
+                String::from("Loop enabled.")
+            } else {
+                String::from("Loop disabled.")
+            };
+            Task::none()
+        }
         Message::Stop => {
             app.playing = false;
             app.status = String::from("Stopped.");
@@ -334,6 +348,7 @@ pub fn update(app: &mut EditApp, message: Message) -> Task<Message> {
             if let Some(sample) = sample_at_ratio(app, ratio) {
                 app.selection_anchor_samples = Some(sample);
                 app.selection_samples = Some((sample, sample));
+                app.xfade_samples = 0;
             }
             Task::none()
         }
@@ -353,13 +368,19 @@ pub fn update(app: &mut EditApp, message: Message) -> Task<Message> {
                 let start = anchor.min(sample);
                 let end = anchor.max(sample);
                 app.selection_samples = (end > start).then_some((start, end));
-                if let Some((start, end)) = app.selection_samples {
-                    app.status = format!(
-                        "Selected {}..{} samples ({:.3} s).",
-                        start,
-                        end,
-                        selection_duration_seconds(app)
-                    );
+                match app.selection_samples {
+                    Some((start, end)) => {
+                        app.xfade_samples = app.xfade_samples.min((end - start) / 2);
+                        app.status = format!(
+                            "Selected {}..{} samples ({:.3} s).",
+                            start,
+                            end,
+                            selection_duration_seconds(app)
+                        );
+                    }
+                    None => {
+                        app.xfade_samples = 0;
+                    }
                 }
             }
             Task::none()
@@ -382,12 +403,35 @@ pub fn update(app: &mut EditApp, message: Message) -> Task<Message> {
             };
             app.selection_anchor_samples = None;
             app.selection_samples = Some((new_start, new_end));
+            app.xfade_samples = app
+                .xfade_samples
+                .min((new_end - new_start).saturating_sub(1) / 2);
             app.status = format!(
                 "Selected {}..{} samples ({:.3} s).",
                 new_start,
                 new_end,
                 selection_duration_seconds(app)
             );
+            Task::none()
+        }
+        Message::SelectionXfade(inner_start_ratio, inner_end_ratio) => {
+            let Some((sel_start, sel_end)) = app.selection_samples else {
+                return Task::none();
+            };
+            let Some(frames) = app.audio.as_ref().map(AudioDocument::frames) else {
+                return Task::none();
+            };
+            let to_sample =
+                |ratio: f32| ((ratio.clamp(0.0, 1.0) * frames as f32).round() as usize).min(frames);
+            let inner_start = to_sample(inner_start_ratio);
+            let inner_end = to_sample(inner_end_ratio).max(inner_start);
+            let xfade_from_start = inner_start.saturating_sub(sel_start);
+            let xfade_from_end = sel_end.saturating_sub(inner_end);
+            app.xfade_samples = xfade_from_start.min(xfade_from_end);
+            let ms = app.xfade_samples as f32
+                / app.audio.as_ref().map_or(1, |a| a.sample_rate) as f32
+                * 1000.0;
+            app.status = format!("Xfade {} samples ({:.1} ms).", app.xfade_samples, ms);
             Task::none()
         }
         Message::PlayheadMoved(ratio) => {
@@ -527,6 +571,7 @@ pub fn update(app: &mut EditApp, message: Message) -> Task<Message> {
             app.engine_clip_path = None;
             app.selection_anchor_samples = None;
             app.selection_samples = None;
+            app.xfade_samples = 0;
             app.history = EditHistory::new(DocumentSnapshot {
                 samples: audio.samples.clone(),
                 edits: audio.edits,
@@ -912,6 +957,7 @@ fn apply_standalone_audio_edit_action(app: &mut EditApp, action: AudioEditAction
             delete_sample_range(audio, start_sample, length_samples);
             app.selection_anchor_samples = None;
             app.selection_samples = None;
+            app.xfade_samples = 0;
             app.status = format!(
                 "Deleted {}..{} samples.",
                 start_sample,
@@ -1204,5 +1250,148 @@ mod tests {
         };
         let _ = update(&mut app, Message::PreferencesCancel);
         assert!(app.preferences_dialog.is_none());
+    }
+
+    #[test]
+    fn toggle_loop_flips_loop_enabled() {
+        let mut app = app_with_markers(Vec::new(), 100);
+        let _ = update(&mut app, Message::ToggleLoop);
+        assert!(app.loop_enabled);
+        assert_eq!(app.status, "Loop enabled.");
+        let _ = update(&mut app, Message::ToggleLoop);
+        assert!(!app.loop_enabled);
+        assert_eq!(app.status, "Loop disabled.");
+    }
+
+    #[test]
+    fn loop_region_uses_selection_when_present() {
+        let mut app = app_with_markers(Vec::new(), 100);
+        app.selection_samples = Some((20, 60));
+        assert_eq!(crate::transport::loop_region(&app), Some((20, 60)));
+    }
+
+    #[test]
+    fn loop_region_covers_whole_file_without_selection() {
+        let mut app = app_with_markers(Vec::new(), 100);
+        assert_eq!(crate::transport::loop_region(&app), Some((0, 100)));
+        app.selection_samples = Some((40, 40));
+        assert_eq!(crate::transport::loop_region(&app), Some((0, 100)));
+    }
+
+    #[test]
+    fn playhead_wraps_to_selection_start_when_looping() {
+        let mut app = app_with_markers(Vec::new(), 100);
+        app.selection_samples = Some((20, 60));
+        app.loop_enabled = true;
+        app.playing = true;
+        app.playhead_samples = 59;
+        let finished = crate::transport::refresh_standalone_playhead(&mut app);
+        assert!(!finished);
+        assert_eq!(app.playhead_samples, 20);
+    }
+
+    #[test]
+    fn playhead_wraps_to_start_when_looping_without_selection() {
+        let mut app = app_with_markers(Vec::new(), 100);
+        app.loop_enabled = true;
+        app.playing = true;
+        app.playhead_samples = 50;
+        let finished = crate::transport::refresh_standalone_playhead(&mut app);
+        assert!(!finished);
+        assert_eq!(app.playhead_samples, 0);
+    }
+
+    #[test]
+    fn playhead_stops_at_end_when_loop_disabled() {
+        let mut app = app_with_markers(Vec::new(), 100);
+        app.playing = true;
+        app.playhead_samples = 50;
+        let finished = crate::transport::refresh_standalone_playhead(&mut app);
+        assert!(finished);
+        assert_eq!(app.playhead_samples, 100);
+    }
+
+    #[cfg(feature = "standalone")]
+    #[test]
+    fn toggle_loop_tracks_engine_loop_range() {
+        let mut app = app_with_markers(Vec::new(), 100);
+        let _ = update(&mut app, Message::ToggleLoop);
+        assert_eq!(app.engine_loop_range, Some(Some((0, 100))));
+        app.selection_samples = Some((20, 60));
+        let _ = update(&mut app, Message::RewindToStart);
+        assert_eq!(app.engine_loop_range, Some(Some((20, 60))));
+        let _ = update(&mut app, Message::ToggleLoop);
+        assert_eq!(app.engine_loop_range, Some(None));
+    }
+
+    #[test]
+    fn selection_xfade_drag_sets_symmetric_length() {
+        let mut app = app_with_markers(Vec::new(), 100);
+        app.selection_samples = Some((20, 60));
+        let _ = update(&mut app, Message::SelectionXfade(0.3, 0.5));
+        assert_eq!(app.xfade_samples, 10);
+    }
+
+    #[test]
+    fn selection_xfade_drag_takes_smaller_side_when_uneven() {
+        let mut app = app_with_markers(Vec::new(), 100);
+        app.selection_samples = Some((20, 60));
+        let _ = update(&mut app, Message::SelectionXfade(0.35, 0.5));
+        assert_eq!(app.xfade_samples, 10);
+    }
+
+    #[test]
+    fn selection_xfade_drag_clamps_to_selection() {
+        let mut app = app_with_markers(Vec::new(), 100);
+        app.selection_samples = Some((20, 60));
+        let _ = update(&mut app, Message::SelectionXfade(0.05, 0.95));
+        assert_eq!(app.xfade_samples, 0);
+    }
+
+    #[test]
+    fn selection_xfade_ignored_without_selection() {
+        let mut app = app_with_markers(Vec::new(), 100);
+        let _ = update(&mut app, Message::SelectionXfade(0.3, 0.5));
+        assert_eq!(app.xfade_samples, 0);
+    }
+
+    #[test]
+    fn selection_start_clears_xfade() {
+        let mut app = app_with_markers(Vec::new(), 100);
+        app.selection_samples = Some((20, 60));
+        app.xfade_samples = 10;
+        let _ = update(&mut app, Message::SelectionStart(0.5));
+        assert_eq!(app.xfade_samples, 0);
+    }
+
+    #[test]
+    fn selection_finish_empty_clears_xfade() {
+        let mut app = app_with_markers(Vec::new(), 100);
+        app.selection_anchor_samples = Some(50);
+        app.selection_samples = Some((50, 50));
+        app.xfade_samples = 10;
+        let _ = update(&mut app, Message::SelectionFinish(0.5));
+        assert!(app.selection_samples.is_none());
+        assert_eq!(app.xfade_samples, 0);
+    }
+
+    #[test]
+    fn selection_resize_clamps_xfade_to_half_selection() {
+        let mut app = app_with_markers(Vec::new(), 100);
+        app.selection_samples = Some((20, 60));
+        app.xfade_samples = 15;
+        let _ = update(&mut app, Message::SelectionResize(0.4));
+        assert_eq!(app.selection_samples, Some((20, 40)));
+        assert_eq!(app.xfade_samples, 9);
+    }
+
+    #[test]
+    fn xfade_ratio_shows_inner_region() {
+        let mut app = app_with_markers(Vec::new(), 100);
+        app.selection_samples = Some((20, 60));
+        app.xfade_samples = 10;
+        assert_eq!(crate::transport::xfade_ratio(&app), Some((0.3, 0.5)));
+        app.xfade_samples = 20;
+        assert_eq!(crate::transport::xfade_ratio(&app), None);
     }
 }

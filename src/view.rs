@@ -4,7 +4,7 @@ use maolan_widgets::iced::{
 };
 use maolan_widgets::iced_aw::menu::DrawPath;
 use maolan_widgets::iced_fonts::lucide::{
-    arrow_down, arrow_right, arrow_up, fast_forward, flag, play, redo, rewind, square,
+    arrow_down, arrow_right, arrow_up, fast_forward, flag, play, redo, repeat, rewind, square,
     trending_down, trending_up, undo, x,
 };
 use maolan_widgets::waveform::SampleWaveform;
@@ -23,7 +23,7 @@ use crate::dialogs::{
 use crate::markers::nearest_marker_sample;
 use crate::message::Message;
 use crate::state::EditApp;
-use crate::transport::{playhead_ratio, sample_at_ratio, selection_ratio, vu_meter};
+use crate::transport::{playhead_ratio, sample_at_ratio, selection_ratio, vu_meter, xfade_ratio};
 
 pub fn view(app: &EditApp) -> Element<'_, Message> {
     if !app.standalone_ready {
@@ -33,18 +33,20 @@ pub fn view(app: &EditApp) -> Element<'_, Message> {
 }
 
 pub fn embedded_view(app: &EditApp) -> Element<'_, Message> {
-    view_with_chrome(app, false, true, true)
+    view_with_chrome_options(app, false, true, true, false, false, true)
 }
 
 pub fn embedded_view_with_play_disabled(
     app: &EditApp,
     play_disabled: bool,
 ) -> Element<'_, Message> {
-    view_with_chrome_options(app, false, true, true, play_disabled)
+    view_with_chrome_options(app, false, true, true, play_disabled, false, true)
 }
 
+/// Embedded view without the VU meter and the close button, as used by the
+/// sampler plugin which provides its own navigation.
 pub fn embedded_view_without_vu_meter(app: &EditApp) -> Element<'_, Message> {
-    view_with_chrome(app, false, true, false)
+    view_with_chrome_options(app, false, true, false, false, true, false)
 }
 
 fn view_with_chrome(
@@ -53,7 +55,15 @@ fn view_with_chrome(
     show_toolbar: bool,
     show_vu_meter: bool,
 ) -> Element<'_, Message> {
-    view_with_chrome_options(app, show_menu, show_toolbar, show_vu_meter, false)
+    view_with_chrome_options(
+        app,
+        show_menu,
+        show_toolbar,
+        show_vu_meter,
+        false,
+        show_menu,
+        true,
+    )
 }
 
 fn view_with_chrome_options(
@@ -62,8 +72,9 @@ fn view_with_chrome_options(
     show_toolbar: bool,
     show_vu_meter: bool,
     play_disabled: bool,
+    show_loop: bool,
+    show_close: bool,
 ) -> Element<'_, Message> {
-    let show_close = !show_menu;
     let waveform: Element<'_, Message> = match app.audio.as_ref() {
         Some(audio) => {
             let markers = audio
@@ -74,10 +85,12 @@ fn view_with_chrome_options(
             SampleWaveform::new(audio.channel_samples.iter().map(Vec::as_slice), audio.peak)
                 .playhead_ratio(playhead_ratio(app))
                 .selection_ratio(selection_ratio(app))
+                .xfade_ratio(xfade_ratio(app))
                 .markers(markers)
                 .on_selection_start(Message::SelectionStart)
                 .on_selection_drag(Message::SelectionDrag)
                 .on_selection_finish(Message::SelectionFinish)
+                .on_xfade(|(start, end)| Message::SelectionXfade(start, end))
                 .on_click(Message::PlayheadMoved)
                 .on_double_click(Message::SelectMarkerRegion)
                 .on_right_click(|ratio| {
@@ -121,7 +134,7 @@ fn view_with_chrome_options(
         content = content.push(standalone_menu());
     }
     if show_toolbar {
-        content = content.push(toolbar_for_app(app, play_disabled, show_close));
+        content = content.push(toolbar_for_app(app, play_disabled, show_close, show_loop));
     }
     let mut content = content.push(waveform.width(Length::Fill).height(Length::Fill));
     if app.busy {
@@ -240,7 +253,7 @@ pub fn toolbar() -> Element<'static, Message> {
 }
 
 pub fn toolbar_with_playhead(label: impl Into<String>, playing: bool) -> Element<'static, Message> {
-    toolbar_with_playhead_options(label, playing, false, false)
+    toolbar_with_playhead_options(label, playing, false, false, false, false)
 }
 
 fn toolbar_with_playhead_options(
@@ -248,6 +261,8 @@ fn toolbar_with_playhead_options(
     playing: bool,
     play_disabled: bool,
     show_close: bool,
+    show_loop: bool,
+    loop_enabled: bool,
 ) -> Element<'static, Message> {
     let label = label.into();
     let play_button = if play_disabled {
@@ -261,40 +276,58 @@ fn toolbar_with_playhead_options(
         toolbar_button(rewind().size(16), "Rewind to start", Message::RewindToStart),
         play_button,
         toolbar_button(square().size(16), "Stop", Message::Stop),
-        toolbar_button(fast_forward().size(16), "Go to end", Message::GoToEnd),
-        toolbar_button(
-            arrow_right().size(16),
-            "Next zero crossing",
-            Message::JumpToNextZeroCrossing
-        ),
-        container(text(label).size(14))
-            .padding([4, 8])
-            .style(if playing {
-                playhead_active_style
-            } else {
-                playhead_style
-            }),
-        toolbar_button(trending_up().size(16), "Fade in", Message::FadeIn),
-        toolbar_button(trending_down().size(16), "Fade out", Message::FadeOut),
-        toolbar_button(
-            flag().size(16),
-            "Detect markers",
-            Message::DetectMarkersDialog
-        ),
-        toolbar_button(
-            arrow_up().size(16),
-            "Increase volume",
-            Message::IncreaseVolume
-        ),
-        toolbar_button(
-            arrow_down().size(16),
-            "Decrease volume",
-            Message::DecreaseVolume
-        ),
-        Space::new().width(Length::Fill),
     ]
     .spacing(4)
     .align_y(maolan_widgets::iced::Alignment::Center);
+    if show_loop {
+        buttons = buttons.push(toolbar_loop_button(loop_enabled));
+    }
+    buttons = buttons
+        .push(toolbar_button(
+            fast_forward().size(16),
+            "Go to end",
+            Message::GoToEnd,
+        ))
+        .push(toolbar_button(
+            arrow_right().size(16),
+            "Next zero crossing",
+            Message::JumpToNextZeroCrossing,
+        ))
+        .push(
+            container(text(label).size(14))
+                .padding([4, 8])
+                .style(if playing {
+                    playhead_active_style
+                } else {
+                    playhead_style
+                }),
+        )
+        .push(toolbar_button(
+            trending_up().size(16),
+            "Fade in",
+            Message::FadeIn,
+        ))
+        .push(toolbar_button(
+            trending_down().size(16),
+            "Fade out",
+            Message::FadeOut,
+        ))
+        .push(toolbar_button(
+            flag().size(16),
+            "Detect markers",
+            Message::DetectMarkersDialog,
+        ))
+        .push(toolbar_button(
+            arrow_up().size(16),
+            "Increase volume",
+            Message::IncreaseVolume,
+        ))
+        .push(toolbar_button(
+            arrow_down().size(16),
+            "Decrease volume",
+            Message::DecreaseVolume,
+        ))
+        .push(Space::new().width(Length::Fill));
     if show_close {
         buttons = buttons.push(toolbar_button(x().size(16), "Close editor", Message::Close));
     }
@@ -310,8 +343,16 @@ fn toolbar_for_app(
     app: &EditApp,
     play_disabled: bool,
     show_close: bool,
+    show_loop: bool,
 ) -> Element<'static, Message> {
-    toolbar_with_playhead_options(playhead_label(app), app.playing, play_disabled, show_close)
+    toolbar_with_playhead_options(
+        playhead_label(app),
+        app.playing,
+        play_disabled,
+        show_close,
+        show_loop,
+        app.loop_enabled,
+    )
 }
 
 fn toolbar_button<'a>(
@@ -326,6 +367,26 @@ fn toolbar_button<'a>(
             .style(toolbar_button_style)
             .on_press(message),
         container(text(label).size(12))
+            .padding([4, 8])
+            .style(tooltip_style),
+        tooltip::Position::Bottom,
+    )
+    .gap(4)
+    .into()
+}
+
+fn toolbar_loop_button(enabled: bool) -> Element<'static, Message> {
+    tooltip(
+        button(repeat().size(16))
+            .width(Length::Fixed(30.0))
+            .height(Length::Fixed(26.0))
+            .style(if enabled {
+                toolbar_button_active_style
+            } else {
+                toolbar_button_style
+            })
+            .on_press(Message::ToggleLoop),
+        container(text("Loop selection or entire file").size(12))
             .padding([4, 8])
             .style(tooltip_style),
         tooltip::Position::Bottom,
@@ -590,6 +651,13 @@ fn toolbar_button_style(theme: &Theme, status: button::Status) -> button::Style 
     style.border.color = Color::from_rgb(0.18, 0.20, 0.24);
     style.text_color = Color::from_rgb(0.92, 0.92, 0.92);
     style.background = Some(Background::Color(Color::TRANSPARENT));
+    style
+}
+
+fn toolbar_button_active_style(theme: &Theme, status: button::Status) -> button::Style {
+    let mut style = toolbar_button_style(theme, status);
+    style.background = Some(Background::Color(Color::from_rgb(0.10, 0.16, 0.12)));
+    style.border.color = Color::from_rgb(0.22, 0.45, 0.26);
     style
 }
 

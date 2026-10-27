@@ -18,6 +18,24 @@ pub fn set_embedded_transport(app: &mut EditApp, playing: bool, playhead_samples
     app.playhead_samples = playhead_samples.min(frames);
 }
 
+pub fn loop_enabled(app: &EditApp) -> bool {
+    app.loop_enabled
+}
+
+pub fn xfade_samples(app: &EditApp) -> usize {
+    app.xfade_samples
+}
+
+pub fn set_embedded_xfade(app: &mut EditApp, xfade_samples: usize) {
+    app.xfade_samples = xfade_samples;
+}
+
+pub fn set_embedded_loop(app: &mut EditApp, enabled: bool, region: Option<(usize, usize)>) {
+    app.loop_enabled = enabled;
+    app.selection_anchor_samples = None;
+    app.selection_samples = region.filter(|(start, end)| end > start);
+}
+
 pub struct HostPreview {
     pub samples: Arc<Vec<f32>>,
     pub channels: usize,
@@ -193,11 +211,52 @@ pub(crate) fn refresh_standalone_playhead(app: &mut EditApp) -> bool {
     };
     let step = (audio.sample_rate / 25).max(1) as usize;
     app.playhead_samples = app.playhead_samples.saturating_add(step);
+    if app.loop_enabled
+        && let Some((loop_start, loop_end)) = loop_region(app)
+        && app.playhead_samples >= loop_end
+    {
+        app.playhead_samples = loop_start;
+        return false;
+    }
     if app.playhead_samples >= audio.frames() {
         app.playhead_samples = audio.frames();
         return true;
     }
     false
+}
+
+pub fn loop_region(app: &EditApp) -> Option<(usize, usize)> {
+    let frames = app.audio.as_ref()?.frames();
+    match app.selection_samples {
+        Some((start, end)) if end > start => Some((start, end.min(frames))),
+        _ => Some((0, frames)),
+    }
+}
+
+#[cfg(feature = "standalone")]
+pub(crate) fn sync_engine_loop(app: &mut EditApp) -> Task<Message> {
+    let range = if app.loop_enabled {
+        loop_region(app)
+    } else {
+        None
+    };
+    if app.engine_loop_range.as_ref() == Some(&range) {
+        return Task::none();
+    }
+    app.engine_loop_range = Some(range);
+    let Some(playback) = app.engine_playback.as_ref() else {
+        return Task::none();
+    };
+    let client = playback.client.clone();
+    Task::perform(
+        async move { crate::engine::send_engine(&client, EngineAction::SetLoopRange(range)).await },
+        |_| Message::None,
+    )
+}
+
+#[cfg(not(feature = "standalone"))]
+pub(crate) fn sync_engine_loop(_app: &mut EditApp) -> Task<Message> {
+    Task::none()
 }
 
 pub(crate) fn playhead_ratio(app: &EditApp) -> Option<f32> {
@@ -209,6 +268,19 @@ pub(crate) fn selection_ratio(app: &EditApp) -> Option<(f32, f32)> {
     let frames = app.audio.as_ref()?.frames().max(1) as f32;
     let (start, end) = app.selection_samples?;
     Some((start as f32 / frames, end as f32 / frames))
+}
+
+pub(crate) fn xfade_ratio(app: &EditApp) -> Option<(f32, f32)> {
+    let frames = app.audio.as_ref()?.frames().max(1) as f32;
+    let (start, end) = app.selection_samples?;
+    let xfade = app.xfade_samples;
+    if xfade == 0 || xfade * 2 >= end.saturating_sub(start) {
+        return None;
+    }
+    Some((
+        (start + xfade) as f32 / frames,
+        end.saturating_sub(xfade) as f32 / frames,
+    ))
 }
 
 pub(crate) fn sample_at_ratio(app: &EditApp, ratio: f32) -> Option<usize> {
