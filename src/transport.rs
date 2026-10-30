@@ -283,9 +283,56 @@ pub(crate) fn xfade_ratio(app: &EditApp) -> Option<(f32, f32)> {
     ))
 }
 
+pub(crate) fn zoom_waveform(
+    app: &mut EditApp,
+    delta_y: f32,
+    cursor_ratio: f32,
+    viewport_width: f32,
+) {
+    if !delta_y.is_finite()
+        || !cursor_ratio.is_finite()
+        || !viewport_width.is_finite()
+        || viewport_width <= 0.0
+        || delta_y == 0.0
+    {
+        return;
+    }
+    let Some(frames) = app.audio.as_ref().map(AudioDocument::frames) else {
+        return;
+    };
+    let (start, end) = app.waveform_view.unwrap_or((0.0, 1.0));
+    let span = end - start;
+    let cursor_ratio = cursor_ratio.clamp(0.0, 1.0);
+    let anchor = start + span * cursor_ratio;
+    let min_visible_samples = (viewport_width / 8.0).max(1.0);
+    let min_span = (min_visible_samples / frames.max(1) as f32).min(1.0);
+    let factor = (-delta_y.clamp(-10.0, 10.0) * 0.2).exp();
+    let new_span = (span * factor).clamp(min_span, 1.0);
+    let new_start = (anchor - new_span * cursor_ratio).clamp(0.0, 1.0 - new_span);
+    app.waveform_view = if new_span == 1.0 {
+        None
+    } else {
+        Some((new_start, new_start + new_span))
+    };
+}
+
+pub(crate) fn scroll_waveform(app: &mut EditApp, value: f32) {
+    if !value.is_finite() {
+        return;
+    }
+    let Some((start, end)) = app.waveform_view else {
+        return;
+    };
+    let span = end - start;
+    let new_start = value.clamp(0.0, 1.0) * (1.0 - span);
+    app.waveform_view = Some((new_start, new_start + span));
+}
+
 pub(crate) fn sample_at_ratio(app: &EditApp, ratio: f32) -> Option<usize> {
     let frames = app.audio.as_ref()?.frames();
-    Some(((ratio.clamp(0.0, 1.0) * frames as f32).round() as usize).min(frames))
+    let (start, end) = app.waveform_view.unwrap_or((0.0, 1.0));
+    let global_ratio = start + (end - start) * ratio.clamp(0.0, 1.0);
+    Some(((global_ratio * frames as f32).round() as usize).min(frames))
 }
 
 pub(crate) fn selection_duration_seconds(app: &EditApp) -> f32 {

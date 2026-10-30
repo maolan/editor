@@ -14,5 +14,6 @@ pub mod message;
 pub mod preferences;
 pub mod shortcuts;
 pub mod state;
+pub mod timeline;
 pub mod transport;
 pub mod view;

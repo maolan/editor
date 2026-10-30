@@ -176,7 +176,7 @@ impl StartupSetup {
             exclusive: true,
             period_frames: 1024,
             nperiods: maolan_widgets::audio_setup::DEFAULT_N_PERIODS,
-            sync_mode: false,
+            sync_mode: true,
         };
         setup.sample_rate_hz = pick_sample_rate(&setup);
         setup.bits = pick_bits(&setup);
@@ -742,6 +742,36 @@ mod tests {
         let a = AudioDeviceOption::with_supported_caps("dev", "A", vec![16], vec![44_100]);
         let b = AudioDeviceOption::with_supported_caps("dev", "B", vec![32], vec![48_000]);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn startup_setup_matches_daw_device_defaults() {
+        let output_devices = vec![AudioDeviceOption::with_supported_caps(
+            "out",
+            "Out",
+            vec![32],
+            vec![48_000],
+        )];
+        let input_devices = vec![AudioDeviceOption::with_supported_caps(
+            "in",
+            "In",
+            vec![32],
+            vec![48_000],
+        )];
+        let setup = StartupSetup::with_preferences(
+            &EditorPreferences::default(),
+            output_devices,
+            input_devices,
+        );
+        assert_eq!(setup.sample_rate_hz, 48_000);
+        assert_eq!(setup.bits, 32);
+        assert_eq!(setup.period_frames, 1024);
+        assert_eq!(
+            setup.nperiods,
+            maolan_widgets::audio_setup::DEFAULT_N_PERIODS
+        );
+        assert!(setup.exclusive);
+        assert!(setup.sync_mode);
     }
 
     #[test]

@@ -101,7 +101,8 @@ pub(crate) fn edit_config_path() -> Option<PathBuf> {
         PathBuf::from(home)
             .join(".config")
             .join("maolan")
-            .join("edit.toml"),
+            .join("editor")
+            .join("config.toml"),
     )
 }
 
