@@ -24,7 +24,8 @@ use crate::markers::detect_markers;
 use crate::preferences::EditorPreferences;
 use crate::transport::{
     play_standalone, prepare_document_track, refresh_standalone_playhead, reset_after_close,
-    sample_at_ratio, selection_duration_seconds, stop_engine_playback, sync_engine_loop,
+    sample_at_ratio, scroll_waveform, selection_duration_seconds, stop_engine_playback,
+    sync_engine_loop, zoom_waveform,
 };
 
 pub use crate::devices::{AudioDeviceOption, AudioEngineOption};
@@ -418,13 +419,12 @@ fn update_message(app: &mut EditApp, message: Message) -> Task<Message> {
             let Some((sel_start, sel_end)) = app.selection_samples else {
                 return Task::none();
             };
-            let Some(frames) = app.audio.as_ref().map(AudioDocument::frames) else {
+            let Some(inner_start) = sample_at_ratio(app, inner_start_ratio) else {
                 return Task::none();
             };
-            let to_sample =
-                |ratio: f32| ((ratio.clamp(0.0, 1.0) * frames as f32).round() as usize).min(frames);
-            let inner_start = to_sample(inner_start_ratio);
-            let inner_end = to_sample(inner_end_ratio).max(inner_start);
+            let inner_end = sample_at_ratio(app, inner_end_ratio)
+                .unwrap_or(inner_start)
+                .max(inner_start);
             let xfade_from_start = inner_start.saturating_sub(sel_start);
             let xfade_from_end = sel_end.saturating_sub(inner_end);
             app.xfade_samples = xfade_from_start.min(xfade_from_end);
@@ -440,6 +440,18 @@ fn update_message(app: &mut EditApp, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+        Message::WaveformZoom {
+            delta_y,
+            cursor_ratio,
+            viewport_width,
+        } => {
+            zoom_waveform(app, delta_y, cursor_ratio, viewport_width);
+            Task::none()
+        }
+        Message::WaveformScroll(value) => {
+            scroll_waveform(app, value);
+            Task::none()
+        }
         Message::SelectMarkerRegion(ratio) => {
             let Some(audio) = app.audio.as_ref() else {
                 return Task::none();
@@ -449,7 +461,9 @@ fn update_message(app: &mut EditApp, message: Message) -> Task<Message> {
                 return Task::none();
             }
             let frames = audio.frames();
-            let click_sample = (ratio.clamp(0.0, 1.0) * frames as f32).round() as usize;
+            let Some(click_sample) = sample_at_ratio(app, ratio) else {
+                return Task::none();
+            };
             let mut sorted = audio.markers.clone();
             sorted.sort_unstable_by_key(|(sample, _)| *sample);
 
@@ -568,6 +582,7 @@ fn update_message(app: &mut EditApp, message: Message) -> Task<Message> {
             app.status = document_status(&audio);
             app.playing = false;
             app.playhead_samples = 0;
+            app.waveform_view = None;
             app.engine_clip_path = None;
             app.selection_anchor_samples = None;
             app.selection_samples = None;
@@ -1011,6 +1026,74 @@ mod tests {
         let mut app = app_with_markers(Vec::new(), 100);
         let _ = update(&mut app, Message::PlayheadMoved(0.25));
         assert_eq!(app.playhead_samples, 25);
+    }
+
+    #[test]
+    fn waveform_zoom_in_preserves_cursor_anchor() {
+        let mut app = app_with_markers(Vec::new(), 100);
+        let anchored_sample = sample_at_ratio(&app, 0.5);
+        let _ = update(
+            &mut app,
+            Message::WaveformZoom {
+                delta_y: 1.0,
+                cursor_ratio: 0.5,
+                viewport_width: 100.0,
+            },
+        );
+        let (start, end) = app.waveform_view.unwrap();
+        assert!(start > 0.0 && start < 0.5);
+        assert!(end < 1.0 && end > 0.5);
+        assert_eq!(sample_at_ratio(&app, 0.5), anchored_sample);
+    }
+
+    #[test]
+    fn waveform_zoom_in_is_limited_to_eight_pixels_per_sample() {
+        let mut app = app_with_markers(Vec::new(), 100);
+        for _ in 0..2 {
+            let _ = update(
+                &mut app,
+                Message::WaveformZoom {
+                    delta_y: 10.0,
+                    cursor_ratio: 0.5,
+                    viewport_width: 100.0,
+                },
+            );
+        }
+        let (start, end) = app.waveform_view.unwrap();
+        assert_eq!(end - start, 0.125);
+    }
+
+    #[test]
+    fn waveform_zoom_out_clamps_to_full_document() {
+        let mut app = app_with_markers(Vec::new(), 100);
+        app.waveform_view = Some((0.25, 0.5));
+        let _ = update(
+            &mut app,
+            Message::WaveformZoom {
+                delta_y: -10.0,
+                cursor_ratio: 0.5,
+                viewport_width: 100.0,
+            },
+        );
+        assert_eq!(app.waveform_view, None);
+    }
+
+    #[test]
+    fn waveform_scroll_preserves_zoom_and_clamps_to_document() {
+        let mut app = app_with_markers(Vec::new(), 100);
+        app.waveform_view = Some((0.25, 0.5));
+        let _ = update(&mut app, Message::WaveformScroll(0.5));
+        assert_eq!(app.waveform_view, Some((0.375, 0.625)));
+        let _ = update(&mut app, Message::WaveformScroll(2.0));
+        assert_eq!(app.waveform_view, Some((0.75, 1.0)));
+    }
+
+    #[test]
+    fn playhead_moved_uses_visible_range() {
+        let mut app = app_with_markers(Vec::new(), 100);
+        app.waveform_view = Some((0.25, 0.75));
+        let _ = update(&mut app, Message::PlayheadMoved(0.5));
+        assert_eq!(app.playhead_samples, 50);
     }
 
     #[test]

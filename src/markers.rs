@@ -104,12 +104,10 @@ pub(crate) fn marker_range_samples(audio: &AudioDocument, start: usize, end: usi
     audio.preview_samples[start * channels..end * channels].to_vec()
 }
 
-pub(crate) fn nearest_marker_sample(audio: &AudioDocument, ratio: f32) -> Option<usize> {
+pub(crate) fn nearest_marker_sample(audio: &AudioDocument, target: usize) -> Option<usize> {
     if audio.markers.is_empty() {
         return None;
     }
-    let frames = audio.frames().max(1);
-    let target = (ratio.clamp(0.0, 1.0) * frames as f32).round() as usize;
     audio
         .markers
         .iter()

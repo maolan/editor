@@ -25,6 +25,7 @@ pub struct EditApp {
     #[cfg(feature = "standalone")]
     pub(crate) engine_loop_range: Option<Option<(usize, usize)>>,
     pub(crate) playhead_samples: usize,
+    pub(crate) waveform_view: Option<(f32, f32)>,
     pub(crate) xfade_samples: usize,
     pub(crate) selection_anchor_samples: Option<usize>,
     pub(crate) selection_samples: Option<(usize, usize)>,

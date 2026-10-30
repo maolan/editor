@@ -53,6 +53,12 @@ pub enum Message {
     SelectionResize(f32),
     SelectionXfade(f32, f32),
     PlayheadMoved(f32),
+    WaveformZoom {
+        delta_y: f32,
+        cursor_ratio: f32,
+        viewport_width: f32,
+    },
+    WaveformScroll(f32),
     SelectMarkerRegion(f32),
     StandalonePlaybackStarted(Result<(), String>),
     StandalonePlaybackStopped(Result<(), String>),

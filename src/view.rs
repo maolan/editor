@@ -10,6 +10,7 @@ use maolan_widgets::iced_fonts::lucide::{
 use maolan_widgets::waveform::SampleWaveform;
 use maolan_widgets::{
     audio_setup::{AudioSetupAction, AudioSetupState, audio_setup},
+    horizontal_scrollbar::HorizontalScrollbar,
     menu::{menu_bar, menu_dropdown, menu_item, menu_items},
 };
 
@@ -23,6 +24,7 @@ use crate::dialogs::{
 use crate::markers::nearest_marker_sample;
 use crate::message::Message;
 use crate::state::EditApp;
+use crate::timeline::timeline;
 use crate::transport::{playhead_ratio, sample_at_ratio, selection_ratio, vu_meter, xfade_ratio};
 
 pub fn view(app: &EditApp) -> Element<'_, Message> {
@@ -83,10 +85,18 @@ fn view_with_chrome_options(
                 .map(|(sample, name)| (*sample, name.clone()))
                 .collect::<Vec<_>>();
             SampleWaveform::new(audio.channel_samples.iter().map(Vec::as_slice), audio.peak)
+                .visible_range(app.waveform_view.unwrap_or((0.0, 1.0)))
                 .playhead_ratio(playhead_ratio(app))
                 .selection_ratio(selection_ratio(app))
                 .xfade_ratio(xfade_ratio(app))
                 .markers(markers)
+                .on_scroll(
+                    |delta_y, cursor_ratio, viewport_width| Message::WaveformZoom {
+                        delta_y,
+                        cursor_ratio,
+                        viewport_width,
+                    },
+                )
                 .on_selection_start(Message::SelectionStart)
                 .on_selection_drag(Message::SelectionDrag)
                 .on_selection_finish(Message::SelectionFinish)
@@ -101,7 +111,10 @@ fn view_with_chrome_options(
                     let sample = app
                         .audio
                         .as_ref()
-                        .and_then(|audio| nearest_marker_sample(audio, ratio))
+                        .and_then(|audio| {
+                            sample_at_ratio(app, ratio)
+                                .and_then(|sample| nearest_marker_sample(audio, sample))
+                        })
                         .unwrap_or(0);
                     Message::MarkerDelete { sample }
                 })
@@ -111,13 +124,26 @@ fn view_with_chrome_options(
         None => SampleWaveform::<Message>::new(std::iter::empty::<&[f32]>(), 0.0).view(),
     };
 
-    let mut waveform = row![
+    let mut waveform_panel = column![
+        timeline(app),
         container(waveform)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(panel_style),
     ]
-    .spacing(8);
+    .spacing(4)
+    .width(Length::Fill)
+    .height(Length::Fill);
+    if let Some((start, end)) = app.waveform_view {
+        let visible_fraction = end - start;
+        let scroll = start / (1.0 - visible_fraction);
+        waveform_panel = waveform_panel.push(
+            HorizontalScrollbar::new(1.0, scroll, Message::WaveformScroll)
+                .visible_fraction(visible_fraction)
+                .height(Length::Fixed(12.0)),
+        );
+    }
+    let mut waveform = row![waveform_panel].spacing(8);
     if show_vu_meter {
         waveform = waveform.push(vu_meter(app));
     }
