@@ -151,8 +151,7 @@ impl StartupSetup {
     ) -> Self {
         let audio_engine = AudioEngineOption::default();
         let output_device = preferences
-            .default_output_device_id
-            .as_deref()
+            .default_output_device_id()
             .and_then(|id| {
                 output_devices
                     .iter()
@@ -161,8 +160,7 @@ impl StartupSetup {
             })
             .or_else(|| output_devices.first().cloned());
         let input_device = preferences
-            .default_input_device_id
-            .as_deref()
+            .default_input_device_id()
             .and_then(|id| input_devices.iter().find(|device| device.id == id).cloned())
             .or_else(|| input_devices.first().cloned());
         let mut setup = Self {
@@ -187,7 +185,7 @@ impl StartupSetup {
 
 impl Default for StartupSetup {
     fn default() -> Self {
-        let preferences = EditorPreferences::load();
+        let preferences = crate::preferences::load();
         let audio_engine = AudioEngineOption::default();
         let output_devices = discover_output_audio_devices(audio_engine);
         let input_devices = discover_input_audio_devices(audio_engine);
@@ -776,10 +774,10 @@ mod tests {
 
     #[test]
     fn startup_setup_with_preferences_selects_saved_devices() {
-        let preferences = EditorPreferences {
-            default_output_device_id: Some(String::from("out2")),
-            default_input_device_id: Some(String::from("in2")),
-        };
+        let preferences = EditorPreferences::from_toml_str(
+            "default_output_device_id = \"out2\"\ndefault_input_device_id = \"in2\"\n",
+        )
+        .unwrap();
         let output_devices = vec![
             AudioDeviceOption::with_supported_caps("out1", "Out One", vec![32], vec![48_000]),
             AudioDeviceOption::with_supported_caps("out2", "Out Two", vec![32], vec![48_000]),
@@ -803,10 +801,10 @@ mod tests {
 
     #[test]
     fn startup_setup_with_preferences_falls_back_to_first_device() {
-        let preferences = EditorPreferences {
-            default_output_device_id: Some(String::from("missing")),
-            default_input_device_id: Some(String::from("missing")),
-        };
+        let preferences = EditorPreferences::from_toml_str(
+            "default_output_device_id = \"missing\"\ndefault_input_device_id = \"missing\"\n",
+        )
+        .unwrap();
         let output_devices = vec![AudioDeviceOption::with_supported_caps(
             "out1",
             "Out One",

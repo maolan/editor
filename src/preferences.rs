@@ -1,101 +1,48 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-#[derive(Debug, Clone, Default)]
-pub(crate) struct EditorPreferences {
-    pub(crate) default_output_device_id: Option<String>,
-    pub(crate) default_input_device_id: Option<String>,
+pub(crate) use maolan_engine::preferences::AudioDevicePreferences as EditorPreferences;
+
+pub(crate) fn load() -> EditorPreferences {
+    let Some(config_path) = edit_config_path() else {
+        return EditorPreferences::default();
+    };
+    #[cfg(not(target_os = "freebsd"))]
+    let preferences = EditorPreferences::load_from_path(&config_path);
+    #[cfg(target_os = "freebsd")]
+    let mut preferences = EditorPreferences::load_from_path(&config_path);
+    #[cfg(target_os = "freebsd")]
+    {
+        let daw_preferences = daw_config_path()
+            .map(|path| EditorPreferences::load_from_path(&path))
+            .unwrap_or_default();
+        let output = migrate_oss_device_id(
+            preferences.default_output_device_id(),
+            daw_preferences.default_output_device_id(),
+        );
+        let input = migrate_oss_device_id(
+            preferences.default_input_device_id(),
+            daw_preferences.default_input_device_id(),
+        );
+        if output.as_deref() != preferences.default_output_device_id()
+            || input.as_deref() != preferences.default_input_device_id()
+        {
+            preferences.set_default_output_device_id(output);
+            preferences.set_default_input_device_id(input);
+            let _ = preferences.save_to_path(&config_path);
+        }
+    }
+    preferences
 }
 
-impl EditorPreferences {
-    pub(crate) fn load() -> Self {
-        let Some(config_path) = edit_config_path() else {
-            return Self::default();
-        };
-        Self::load_from_path(&config_path)
-    }
-
-    pub(crate) fn load_from_path(config_path: &Path) -> Self {
-        let Ok(contents) = std::fs::read_to_string(config_path) else {
-            return Self::default();
-        };
-        let Ok(value) = toml::from_str::<toml::Value>(&contents) else {
-            return Self::default();
-        };
-        Self {
-            default_output_device_id: preference_device_id(&value, "default_output_device_id"),
-            default_input_device_id: preference_device_id(&value, "default_input_device_id"),
-        }
-    }
-
-    pub(crate) fn save(&self) -> Result<(), String> {
-        let Some(config_path) = edit_config_path() else {
-            return Err(String::from("Could not determine config directory."));
-        };
-        self.save_to_path(&config_path)
-    }
-
-    pub(crate) fn save_to_path(&self, config_path: &Path) -> Result<(), String> {
-        let mut lines: Vec<String> = if config_path.exists() {
-            std::fs::read_to_string(config_path)
-                .map_err(|err| err.to_string())?
-                .lines()
-                .map(ToOwned::to_owned)
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        let mut output_set = false;
-        let mut input_set = false;
-        for line in &mut lines {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("default_output_device_id") {
-                if let Some(id) = self.default_output_device_id.as_deref() {
-                    *line = format!("default_output_device_id = \"{id}\"");
-                } else {
-                    line.clear()
-                }
-                output_set = true;
-            } else if trimmed.starts_with("default_input_device_id") {
-                if let Some(id) = self.default_input_device_id.as_deref() {
-                    *line = format!("default_input_device_id = \"{id}\"");
-                } else {
-                    line.clear()
-                }
-                input_set = true;
-            }
-        }
-        lines.retain(|line| !line.is_empty());
-
-        if !output_set && let Some(id) = self.default_output_device_id.as_deref() {
-            lines.push(format!("default_output_device_id = \"{id}\""));
-        }
-        if !input_set && let Some(id) = self.default_input_device_id.as_deref() {
-            lines.push(format!("default_input_device_id = \"{id}\""));
-        }
-
-        if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-        }
-        let content = if lines.is_empty() {
-            String::new()
-        } else {
-            format!("{}\n", lines.join("\n"))
-        };
-        std::fs::write(config_path, content).map_err(|err| err.to_string())?;
-        Ok(())
-    }
+#[cfg(target_os = "freebsd")]
+pub(crate) fn save(preferences: &EditorPreferences) -> Result<(), String> {
+    let Some(config_path) = edit_config_path() else {
+        return Err(String::from("Could not determine config directory."));
+    };
+    preferences.save_to_path(&config_path)
 }
 
-fn preference_device_id(value: &toml::Value, key: &str) -> Option<String> {
-    value
-        .get(key)
-        .and_then(toml::Value::as_str)
-        .filter(|id| !id.is_empty() && *id != "__auto__")
-        .map(ToOwned::to_owned)
-}
-
-pub(crate) fn edit_config_path() -> Option<PathBuf> {
+fn edit_config_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
     Some(
         PathBuf::from(home)
@@ -106,88 +53,64 @@ pub(crate) fn edit_config_path() -> Option<PathBuf> {
     )
 }
 
+#[cfg(target_os = "freebsd")]
+fn daw_config_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    Some(
+        PathBuf::from(home)
+            .join(".config")
+            .join("maolan")
+            .join("daw")
+            .join("config.toml"),
+    )
+}
+
+#[cfg(target_os = "freebsd")]
+fn migrate_oss_device_id(editor_id: Option<&str>, daw_id: Option<&str>) -> Option<String> {
+    match editor_id {
+        Some(id) if id.starts_with("/dev/dsp") => Some(id.to_string()),
+        _ => daw_id
+            .filter(|id| id.starts_with("/dev/dsp"))
+            .map(ToOwned::to_owned),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "freebsd")]
     use super::*;
 
     #[test]
-    fn preferences_save_to_path_preserves_other_keys() {
+    #[cfg(target_os = "freebsd")]
+    fn shared_preferences_load_and_save_preserves_other_settings() {
         let dir = std::env::temp_dir().join(format!(
-            "maolan-edit-prefs-preserve-{}",
-            std::time::UNIX_EPOCH.elapsed().unwrap().as_secs()
+            "maolan-edit-prefs-{}",
+            std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()
         ));
-        let _ = std::fs::remove_dir_all(&dir);
-        let config_path = dir.join("config.toml");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            &config_path,
-            "existing_key = \"keep me\"\ndefault_output_device_id = \"old\"\n",
-        )
-        .unwrap();
-
-        let preferences = EditorPreferences {
-            default_output_device_id: Some(String::from("new_out")),
-            default_input_device_id: Some(String::from("new_in")),
-        };
-        preferences.save_to_path(&config_path).unwrap();
-
-        let saved = std::fs::read_to_string(&config_path).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "existing_key = \"keep me\"\n").unwrap();
+        let mut preferences = EditorPreferences::default();
+        preferences.set_default_output_device_id(Some(String::from("/dev/dsp5")));
+        preferences.set_default_input_device_id(Some(String::from("/dev/dsp5")));
+        preferences.save_to_path(&path).unwrap();
+        let loaded = EditorPreferences::load_from_path(&path);
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(loaded, preferences);
         assert!(saved.contains("existing_key = \"keep me\""));
-        assert!(saved.contains("default_output_device_id = \"new_out\""));
-        assert!(saved.contains("default_input_device_id = \"new_in\""));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[cfg(target_os = "freebsd")]
     #[test]
-    fn preferences_save_removes_empty_ids() {
-        let dir = std::env::temp_dir().join(format!(
-            "maolan-edit-prefs-remove-{}",
-            std::time::UNIX_EPOCH.elapsed().unwrap().as_secs()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        let config_path = dir.join("config.toml");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            &config_path,
-            "default_output_device_id = \"old\"\ndefault_input_device_id = \"old\"\n",
-        )
-        .unwrap();
-
-        let preferences = EditorPreferences {
-            default_output_device_id: None,
-            default_input_device_id: None,
-        };
-        preferences.save_to_path(&config_path).unwrap();
-
-        let saved = std::fs::read_to_string(&config_path).unwrap();
-        assert!(!saved.contains("default_output_device_id"));
-        assert!(!saved.contains("default_input_device_id"));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn preferences_load_from_path_reads_device_ids() {
-        let dir = std::env::temp_dir().join(format!(
-            "maolan-edit-prefs-load-{}",
-            std::time::UNIX_EPOCH.elapsed().unwrap().as_secs()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let config_path = dir.join("edit.toml");
-        let contents =
-            "default_output_device_id = \"/dev/dsp2\"\ndefault_input_device_id = \"/dev/dsp3\"\n";
-        std::fs::write(&config_path, contents).unwrap();
-
-        let preferences = EditorPreferences::load_from_path(&config_path);
-
+    fn migration_uses_maolan_oss_device_id_for_legacy_editor_ids() {
         assert_eq!(
-            preferences.default_output_device_id.as_deref(),
-            Some("/dev/dsp2")
+            migrate_oss_device_id(Some("in2"), Some("/dev/dsp5")),
+            Some(String::from("/dev/dsp5"))
         );
         assert_eq!(
-            preferences.default_input_device_id.as_deref(),
-            Some("/dev/dsp3")
+            migrate_oss_device_id(Some("/dev/dsp4"), Some("/dev/dsp5")),
+            Some(String::from("/dev/dsp4"))
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

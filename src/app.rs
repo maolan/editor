@@ -21,6 +21,7 @@ use crate::io::{
 };
 use crate::io::{document_status, load_audio_buffer};
 use crate::markers::detect_markers;
+#[cfg(target_os = "freebsd")]
 use crate::preferences::EditorPreferences;
 use crate::transport::{
     play_standalone, prepare_document_track, refresh_standalone_playhead, reset_after_close,
@@ -637,7 +638,7 @@ fn update_message(app: &mut EditApp, message: Message) -> Task<Message> {
             app.status = document_status(&audio);
             app.playing = false;
             app.playhead_samples = 0;
-            app.waveform_view = None;
+            app.waveform_view = initial_waveform_view(&audio);
             app.engine_clip_path = None;
             app.selection_anchor_samples = None;
             app.selection_samples = None;
@@ -974,13 +975,21 @@ fn update_message(app: &mut EditApp, message: Message) -> Task<Message> {
             };
             app.setup.output_device = dialog.output_device.clone();
             app.setup.input_device = dialog.input_device.clone();
-            let preferences = EditorPreferences {
-                default_output_device_id: dialog.output_device.map(|device| device.id),
-                default_input_device_id: dialog.input_device.map(|device| device.id),
-            };
-            match preferences.save() {
-                Ok(()) => app.status = String::from("Preferences saved."),
-                Err(err) => app.status = format!("Failed to save preferences: {err}"),
+            #[cfg(target_os = "freebsd")]
+            {
+                let mut preferences = EditorPreferences::default();
+                preferences
+                    .set_default_output_device_id(dialog.output_device.map(|device| device.id));
+                preferences
+                    .set_default_input_device_id(dialog.input_device.map(|device| device.id));
+                match crate::preferences::save(&preferences) {
+                    Ok(()) => app.status = String::from("Preferences saved."),
+                    Err(err) => app.status = format!("Failed to save preferences: {err}"),
+                }
+            }
+            #[cfg(not(target_os = "freebsd"))]
+            {
+                app.status = String::from("Audio preferences apply to this session only.");
             }
             Task::none()
         }
@@ -1085,6 +1094,15 @@ fn set_selection_boundary(app: &mut EditApp, value: &str, is_start: bool) -> Tas
     Task::none()
 }
 
+fn initial_waveform_view(audio: &AudioDocument) -> Option<(f32, f32)> {
+    const INITIAL_VIEW_SECONDS: f64 = 5.0 * 60.0;
+    let duration = audio.frames() as f64 / audio.sample_rate.max(1) as f64;
+    (duration > INITIAL_VIEW_SECONDS).then(|| {
+        let visible = (INITIAL_VIEW_SECONDS / duration) as f32;
+        (0.0, visible.clamp(f32::EPSILON, 1.0))
+    })
+}
+
 fn nearest_zero_crossing(audio: &crate::document::AudioDocument, target: usize) -> Option<usize> {
     let channels = audio.channels.max(1);
     let frames = audio.preview_samples.len() / channels;
@@ -1186,6 +1204,8 @@ fn materialize_edits(audio: &mut crate::document::AudioDocument) {
 mod tests {
     use super::*;
     use crate::document::test_document;
+    #[cfg(not(target_os = "freebsd"))]
+    use crate::preferences::EditorPreferences;
 
     fn app_with_markers(markers: Vec<(usize, String)>, frames: usize) -> EditApp {
         let mut audio = test_document(vec![0.0f32; frames], 1);
@@ -1243,14 +1263,16 @@ mod tests {
     fn waveform_zoom_out_clamps_to_full_document() {
         let mut app = app_with_markers(Vec::new(), 100);
         app.waveform_view = Some((0.25, 0.5));
-        let _ = update(
-            &mut app,
-            Message::WaveformZoom {
-                delta_y: -10.0,
-                cursor_ratio: 0.5,
-                viewport_width: 100.0,
-            },
-        );
+        for _ in 0..3 {
+            let _ = update(
+                &mut app,
+                Message::WaveformZoom {
+                    delta_y: -10.0,
+                    cursor_ratio: 0.5,
+                    viewport_width: 100.0,
+                },
+            );
+        }
         assert_eq!(app.waveform_view, None);
     }
 

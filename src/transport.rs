@@ -317,8 +317,13 @@ pub(crate) fn zoom_waveform(
     let anchor = start + span * cursor_ratio;
     let min_visible_samples = (viewport_width / 8.0).max(1.0);
     let min_span = (min_visible_samples / frames.max(1) as f32).min(1.0);
-    let factor = (-delta_y.clamp(-10.0, 10.0) * 0.2).exp();
-    let new_span = (span * factor).clamp(min_span, 1.0);
+    let factor = 1.12_f32.powf(delta_y.abs().clamp(0.0, 10.0));
+    let new_span = if delta_y > 0.0 {
+        span / factor
+    } else {
+        span * factor
+    }
+    .clamp(min_span, 1.0);
     let new_start = (anchor - new_span * cursor_ratio).clamp(0.0, 1.0 - new_span);
     app.waveform_view = if new_span == 1.0 {
         None

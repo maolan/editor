@@ -1,8 +1,8 @@
 use maolan_widgets::iced::{
-    Color, Element, Length, Point, Rectangle, Renderer, Theme, mouse,
+    Color, Element, Event, Length, Point, Rectangle, Renderer, Theme, mouse,
     widget::{
         canvas,
-        canvas::{Frame, Geometry, Path, Program, Stroke},
+        canvas::{Action, Frame, Geometry, Path, Program, Stroke},
     },
 };
 
@@ -31,8 +31,33 @@ pub(crate) fn timeline(app: &EditApp) -> Element<'static, Message> {
     .into()
 }
 
-impl<Message> Program<Message> for Timeline {
+impl Program<Message> for Timeline {
     type State = ();
+
+    fn update(
+        &self,
+        _state: &mut Self::State,
+        event: &Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<Action<Message>> {
+        let Event::Mouse(mouse::Event::WheelScrolled { delta }) = event else {
+            return None;
+        };
+        let position = cursor.position_in(bounds)?;
+        let delta_y = match delta {
+            mouse::ScrollDelta::Lines { y, .. } => *y,
+            mouse::ScrollDelta::Pixels { y, .. } => *y / 16.0,
+        };
+        Some(
+            Action::publish(Message::WaveformZoom {
+                delta_y,
+                cursor_ratio: (position.x / bounds.width).clamp(0.0, 1.0),
+                viewport_width: bounds.width,
+            })
+            .and_capture(),
+        )
+    }
 
     fn draw(
         &self,
