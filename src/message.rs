@@ -50,6 +50,8 @@ pub enum Message {
     SelectionStart(f32),
     SelectionDrag(f32),
     SelectionFinish(f32),
+    SelectionStartInput(String),
+    SelectionEndInput(String),
     SelectionResize(f32),
     SelectionXfade(f32, f32),
     PlayheadMoved(f32),
@@ -71,6 +73,12 @@ pub enum Message {
     Undo,
     Redo,
     DeleteSelection,
+    CutSelection,
+    CopySelection,
+    PasteSelection,
+    TrimSelection,
+    NormalizeSelection,
+    ToggleSnapToZeroCrossing,
     OpenPath(PathBuf),
     OpenAudio(AudioBuffer),
     OpenClip {
@@ -131,6 +139,10 @@ pub fn message_edits_document(message: &Message) -> bool {
             | Message::Undo
             | Message::Redo
             | Message::DeleteSelection
+            | Message::CutSelection
+            | Message::PasteSelection
+            | Message::TrimSelection
+            | Message::NormalizeSelection
             | Message::MarkerNameConfirm
             | Message::MarkerDelete { .. }
             | Message::DetectMarkersConfirm

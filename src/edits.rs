@@ -30,6 +30,11 @@ pub enum AudioEditAction {
         start_sample: usize,
         length_samples: usize,
     },
+    Normalize {
+        start_sample: usize,
+        length_samples: usize,
+        peak: f32,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -77,6 +82,11 @@ impl AudioEditAction {
             | Self::ReplaceWithSilence {
                 start_sample,
                 length_samples,
+            }
+            | Self::Normalize {
+                start_sample,
+                length_samples,
+                ..
             } => start_sample >= frames || length_samples == 0,
             Self::Reverse => false,
         }
@@ -150,6 +160,7 @@ pub(crate) fn audio_edit_status(
                 String::from("Volume adjusted on selection.")
             }
         }
+        AudioEditAction::Normalize { .. } => String::from("Selection normalized."),
         AudioEditAction::Reverse => {
             if edits.reversed {
                 String::from("Clip reversed.")
@@ -272,6 +283,24 @@ pub fn apply_audio_edit_action_to_samples(
                     *sample = (*sample * gain).clamp(-1.0, 1.0);
                 },
             );
+        }
+        AudioEditAction::Normalize {
+            start_sample,
+            length_samples,
+            peak,
+        } => {
+            if peak.is_finite() && peak > 0.0 {
+                let gain = (1.0 / peak).min(64.0);
+                apply_region(
+                    samples,
+                    channels,
+                    start_sample,
+                    length_samples,
+                    |_pos, sample| {
+                        *sample = (*sample * gain).clamp(-1.0, 1.0);
+                    },
+                );
+            }
         }
     }
 }

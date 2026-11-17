@@ -346,7 +346,14 @@ fn update_message(app: &mut EditApp, message: Message) -> Task<Message> {
             }
         }
         Message::SelectionStart(ratio) => {
-            if let Some(sample) = sample_at_ratio(app, ratio) {
+            if let Some(mut sample) = sample_at_ratio(app, ratio) {
+                if app.snap_to_zero_crossing {
+                    sample = app
+                        .audio
+                        .as_ref()
+                        .and_then(|audio| nearest_zero_crossing(audio, sample))
+                        .unwrap_or(sample);
+                }
                 app.selection_anchor_samples = Some(sample);
                 app.selection_samples = Some((sample, sample));
                 app.xfade_samples = 0;
@@ -366,6 +373,14 @@ fn update_message(app: &mut EditApp, message: Message) -> Task<Message> {
                 app.selection_anchor_samples.take(),
                 sample_at_ratio(app, ratio),
             ) {
+                let sample = if app.snap_to_zero_crossing {
+                    app.audio
+                        .as_ref()
+                        .and_then(|audio| nearest_zero_crossing(audio, sample))
+                        .unwrap_or(sample)
+                } else {
+                    sample
+                };
                 let start = anchor.min(sample);
                 let end = anchor.max(sample);
                 app.selection_samples = (end > start).then_some((start, end));
@@ -386,13 +401,22 @@ fn update_message(app: &mut EditApp, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+        Message::SelectionStartInput(value) => set_selection_boundary(app, &value, true),
+        Message::SelectionEndInput(value) => set_selection_boundary(app, &value, false),
         Message::SelectionResize(ratio) => {
             let Some((start, end)) = app.selection_samples else {
                 return Task::none();
             };
-            let Some(click_sample) = sample_at_ratio(app, ratio) else {
+            let Some(mut click_sample) = sample_at_ratio(app, ratio) else {
                 return Task::none();
             };
+            if app.snap_to_zero_crossing {
+                click_sample = app
+                    .audio
+                    .as_ref()
+                    .and_then(|audio| nearest_zero_crossing(audio, click_sample))
+                    .unwrap_or(click_sample);
+            }
             let (new_start, new_end) = if click_sample <= start {
                 (click_sample, end)
             } else if click_sample >= end {
@@ -549,6 +573,37 @@ fn update_message(app: &mut EditApp, message: Message) -> Task<Message> {
             }
         }
         Message::DeleteSelection => delete_selection(app),
+        Message::CopySelection => {
+            if let (Some(audio), Some((start, end))) = (app.audio.as_ref(), app.selection_samples) {
+                let channels = audio.channels.max(1);
+                if start < end && end <= audio.frames() {
+                    app.clipboard_samples =
+                        Some(audio.preview_samples[start * channels..end * channels].to_vec());
+                    app.status = format!("Copied {} frames.", end - start);
+                } else {
+                    app.status = String::from("Select audio to copy.");
+                }
+            } else {
+                app.status = String::from("Select audio to copy.");
+            }
+            Task::none()
+        }
+        Message::CutSelection => {
+            let _ = update_message(app, Message::CopySelection);
+            delete_selection(app)
+        }
+        Message::PasteSelection => paste_selection(app),
+        Message::TrimSelection => trim_selection(app),
+        Message::NormalizeSelection => dispatch_audio_edit(app, message.clone()),
+        Message::ToggleSnapToZeroCrossing => {
+            app.snap_to_zero_crossing = !app.snap_to_zero_crossing;
+            app.status = if app.snap_to_zero_crossing {
+                String::from("Zero crossing snap enabled.")
+            } else {
+                String::from("Zero crossing snap disabled.")
+            };
+            Task::none()
+        }
         Message::FileOpened(Some(path)) => {
             #[cfg(feature = "standalone")]
             {
@@ -969,6 +1024,7 @@ fn apply_standalone_audio_edit_action(app: &mut EditApp, action: AudioEditAction
             start_sample,
             length_samples,
         } => {
+            materialize_edits(audio);
             delete_sample_range(audio, start_sample, length_samples);
             app.selection_anchor_samples = None;
             app.selection_samples = None;
@@ -1004,6 +1060,126 @@ fn delete_selection(app: &mut EditApp) -> Task<Message> {
         Some(action) => apply_standalone_audio_edit_action(app, action),
         None => Task::none(),
     }
+}
+
+fn set_selection_boundary(app: &mut EditApp, value: &str, is_start: bool) -> Task<Message> {
+    let Ok(sample) = value.parse::<usize>() else {
+        return Task::none();
+    };
+    let Some(frames) = app
+        .audio
+        .as_ref()
+        .map(crate::document::AudioDocument::frames)
+    else {
+        return Task::none();
+    };
+    let sample = sample.min(frames);
+    let (mut start, mut end) = app.selection_samples.unwrap_or((0, frames));
+    if is_start {
+        start = sample.min(end);
+    } else {
+        end = sample.max(start);
+    }
+    app.selection_samples = (start < end).then_some((start, end));
+    app.status = format!("Selection {}..{} samples.", start, end);
+    Task::none()
+}
+
+fn nearest_zero_crossing(audio: &crate::document::AudioDocument, target: usize) -> Option<usize> {
+    let channels = audio.channels.max(1);
+    let frames = audio.preview_samples.len() / channels;
+    if frames < 2 {
+        return None;
+    }
+    let average = |frame: usize| {
+        audio.preview_samples[frame * channels..(frame + 1) * channels]
+            .iter()
+            .sum::<f32>()
+            / channels as f32
+    };
+    let radius = (audio.sample_rate as usize / 20).max(1);
+    let begin = target.saturating_sub(radius).min(frames - 1);
+    let end = target.saturating_add(radius).min(frames - 1);
+    (begin..end)
+        .filter(|frame| {
+            let a = average(*frame);
+            let b = average(frame + 1);
+            (a <= 0.0 && b > 0.0) || (a >= 0.0 && b < 0.0)
+        })
+        .min_by_key(|frame| frame.abs_diff(target))
+}
+
+fn paste_selection(app: &mut EditApp) -> Task<Message> {
+    let Some(insert) = app.clipboard_samples.clone() else {
+        app.status = String::from("Clipboard is empty.");
+        return Task::none();
+    };
+    let Some(audio) = app.audio.as_mut() else {
+        app.status = String::from("No audio file is open.");
+        return Task::none();
+    };
+    let channels = audio.channels.max(1);
+    let at = app
+        .selection_samples
+        .map_or(app.playhead_samples, |(start, _)| start)
+        .min(audio.frames());
+    if insert.len() % channels != 0 {
+        app.status = String::from("Clipboard channel layout does not match this audio.");
+        return Task::none();
+    }
+    let previous = snapshot(audio);
+    materialize_edits(audio);
+    audio
+        .samples
+        .splice(at * channels..at * channels, insert.iter().copied());
+    let length = insert.len() / channels;
+    app.selection_samples = Some((at, at + length));
+    app.history.record(previous, snapshot(audio));
+    audio.rebuild_preview();
+    app.status = format!("Pasted {length} frames.");
+    prepare_document_track(app)
+}
+
+fn trim_selection(app: &mut EditApp) -> Task<Message> {
+    let Some((start, end)) = app.selection_samples else {
+        app.status = String::from("Select audio to trim.");
+        return Task::none();
+    };
+    let Some(audio) = app.audio.as_mut() else {
+        app.status = String::from("No audio file is open.");
+        return Task::none();
+    };
+    if start >= end || end > audio.frames() {
+        app.status = String::from("Selection is empty.");
+        return Task::none();
+    }
+    let previous = snapshot(audio);
+    materialize_edits(audio);
+    delete_sample_range(audio, end, audio.frames() - end);
+    delete_sample_range(audio, 0, start);
+    app.selection_samples = Some((0, end - start));
+    app.history.record(previous, snapshot(audio));
+    audio.rebuild_preview();
+    app.status = format!("Trimmed to {} frames.", end - start);
+    prepare_document_track(app)
+}
+
+fn snapshot(audio: &crate::document::AudioDocument) -> DocumentSnapshot {
+    DocumentSnapshot {
+        samples: audio.samples.clone(),
+        edits: audio.edits,
+        edit_actions: audio.edit_actions.clone(),
+        markers: audio.markers.clone(),
+    }
+}
+
+fn materialize_edits(audio: &mut crate::document::AudioDocument) {
+    if audio.edit_actions.is_empty() {
+        return;
+    }
+    audio.samples = audio.preview_samples.clone();
+    audio.edit_actions.clear();
+    audio.edits = crate::edits::AudioEdits::default();
 }
 
 #[cfg(test)]

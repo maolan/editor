@@ -1,6 +1,6 @@
 use maolan_widgets::iced::{
     Background, Border, Color, Element, Length, Theme,
-    widget::{Space, button, column, container, progress_bar, row, text, tooltip},
+    widget::{Space, button, column, container, progress_bar, row, text, text_input, tooltip},
 };
 use maolan_widgets::iced_aw::menu::DrawPath;
 use maolan_widgets::iced_fonts::lucide::{
@@ -161,6 +161,27 @@ fn view_with_chrome_options(
     }
     if show_toolbar {
         content = content.push(toolbar_for_app(app, play_disabled, show_close, show_loop));
+        if let Some(audio) = app.audio.as_ref() {
+            let (start, end) = app.selection_samples.unwrap_or((0, audio.frames()));
+            content = content.push(
+                row![
+                    text("Selection samples"),
+                    text_input("start", &start.to_string())
+                        .on_input(Message::SelectionStartInput)
+                        .width(Length::Fixed(120.0)),
+                    text("to"),
+                    text_input("end", &end.to_string())
+                        .on_input(Message::SelectionEndInput)
+                        .width(Length::Fixed(120.0)),
+                    text(format!(
+                        "{:.3} s",
+                        end.saturating_sub(start) as f64 / audio.sample_rate.max(1) as f64
+                    )),
+                ]
+                .spacing(8)
+                .align_y(maolan_widgets::iced::Alignment::Center),
+            );
+        }
     }
     let mut content = content.push(waveform.width(Length::Fill).height(Length::Fill));
     if app.busy {
@@ -221,6 +242,12 @@ pub fn menu(show_open: bool) -> Element<'static, Message> {
         (menu_item("Undo", Message::Undo)),
         (menu_item("Redo", Message::Redo)),
         (menu_item("Next Zero Crossing", Message::JumpToNextZeroCrossing)),
+        (menu_item("Cut", Message::CutSelection)),
+        (menu_item("Copy", Message::CopySelection)),
+        (menu_item("Paste", Message::PasteSelection)),
+        (menu_item("Trim to Selection", Message::TrimSelection)),
+        (menu_item("Normalize Selection", Message::NormalizeSelection)),
+        (menu_item("Snap to Zero Crossing", Message::ToggleSnapToZeroCrossing)),
         (menu_item("Reverse", Message::Reverse)),
         (menu_item("Detect Markers", Message::DetectMarkersDialog)),
         (menu_item("Export Markers", Message::ExportMarkersDialog)),
@@ -255,6 +282,12 @@ pub fn standalone_menu() -> Element<'static, Message> {
         (menu_item("Undo", Message::Undo)),
         (menu_item("Redo", Message::Redo)),
         (menu_item("Next Zero Crossing", Message::JumpToNextZeroCrossing)),
+        (menu_item("Cut", Message::CutSelection)),
+        (menu_item("Copy", Message::CopySelection)),
+        (menu_item("Paste", Message::PasteSelection)),
+        (menu_item("Trim to Selection", Message::TrimSelection)),
+        (menu_item("Normalize Selection", Message::NormalizeSelection)),
+        (menu_item("Snap to Zero Crossing", Message::ToggleSnapToZeroCrossing)),
         (menu_item("Reverse", Message::Reverse)),
         (menu_item("Detect Markers", Message::DetectMarkersDialog)),
         (menu_item("Export Markers", Message::ExportMarkersDialog)),

@@ -252,10 +252,30 @@ pub(crate) fn clip_samples(
 pub(crate) fn deinterleave(samples: &[f32], channels: usize) -> Vec<Vec<f32>> {
     let channels = channels.max(1);
     let frames = samples.len() / channels;
-    let mut output = vec![Vec::with_capacity(frames); channels];
-    for frame in samples.chunks_exact(channels) {
-        for (channel, sample) in frame.iter().copied().enumerate() {
-            output[channel].push(sample);
+    const MAX_WAVEFORM_POINTS_PER_CHANNEL: usize = 262_144;
+    let stride = frames.div_ceil(MAX_WAVEFORM_POINTS_PER_CHANNEL).max(1);
+    let buckets = frames.div_ceil(stride);
+    let mut output =
+        vec![Vec::with_capacity(if stride == 1 { frames } else { buckets * 2 }); channels];
+    if stride == 1 {
+        for frame in samples.chunks_exact(channels) {
+            for (channel, sample) in frame.iter().copied().enumerate() {
+                output[channel].push(sample);
+            }
+        }
+        return output;
+    }
+    for bucket_start in (0..frames).step_by(stride) {
+        let bucket_end = (bucket_start + stride).min(frames);
+        for (channel, points) in output.iter_mut().enumerate() {
+            let mut min = f32::INFINITY;
+            let mut max = f32::NEG_INFINITY;
+            for frame in bucket_start..bucket_end {
+                let sample = samples[frame * channels + channel];
+                min = min.min(sample);
+                max = max.max(sample);
+            }
+            points.extend([min, max]);
         }
     }
     output

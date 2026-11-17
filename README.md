@@ -2,68 +2,54 @@
 
 [![crates.io](https://img.shields.io/crates/v/maolan-editor.svg)](https://crates.io/crates/maolan-editor)
 
-Maolan Edit is a small audio editor built on Maolan's shared Rust audio stack.
-It is intended to grow into a waveform editor in the spirit of classic tools
-such as Sound Forge or Audacity, while reusing Maolan's codecs and UI widgets.
+Maolan Edit is a standalone waveform editor built on Maolan's shared Rust audio
+stack. It opens audio, provides non-destructive preview edits and undo/redo,
+and exports rendered audio. Work is held in memory; saving writes audio and
+does not create a reopenable editing project.
 
-The current version is deliberately minimal:
+## Features
 
-- Open audio files supported by Maolan's decode path.
-- Display the decoded waveform.
-- Save the loaded audio using Maolan's OxideAV-backed export path.
-- No editing tools yet.
+- Open audio formats supported by Maolan's shared decode path.
+- View multichannel waveforms, select ranges, zoom, scroll, and audition audio.
+- Cut, copy, paste, delete, trim to selection, normalize, fade, adjust gain,
+  reverse, and undo or redo edits.
+- Optionally snap selection endpoints to nearby zero crossings with `S`.
+- Add markers manually or detect them from silence, then export marker ranges
+  as separate files.
+- Bound waveform display memory for long files with a min/max envelope. Audio
+  samples remain full resolution for editing and playback.
 
-## Supported Audio I/O
+## Shortcuts
 
-Opening uses `maolan_engine::audio_codec::decode_audio_to_f32_interleaved_sync`,
-which is backed by Symphonia. The open dialog includes:
+| Shortcut | Action |
+| --- | --- |
+| Space | Play or stop |
+| `Z` | Move to next zero crossing |
+| `S` | Toggle zero crossing snap |
+| Delete | Delete selection |
+| Ctrl/Cmd + C, X, V | Copy, cut, paste |
+| Ctrl/Cmd + T | Trim to selection |
+| Ctrl/Cmd + N | Normalize selection |
+| Ctrl/Cmd + Z / Shift + Ctrl/Cmd + Z | Undo / redo |
 
-- WAV
-- FLAC
+## Audio I/O
+
+Opening uses Maolan's Symphonia-backed decoder. Saving uses the shared
+OxideAV-backed encoders:
+
+- WAV (32-bit float for ordinary save; configurable bit depth for marker export)
+- FLAC and Ogg FLAC
 - MP3
-- Ogg / Vorbis
-- M4A / AAC / ALAC
 
-Saving uses `maolan_engine::audio_codec::encode_audio_to_file`, which uses the
-same OxideAV-backed encoders as Maolan:
+## Build and run
 
-- `*.wav` - 32-bit float WAV
-- `*.flac` - 24-bit FLAC
-- `*.ogg` - 24-bit Ogg FLAC
-- `*.mp3` - MP3
-
-Saving to other extensions is rejected.
-
-## Build And Run
-
-This repository is a standalone Cargo crate. Build and run commands should be
-executed from this directory:
+Run commands from this directory:
 
 ```bash
 cargo run
-```
-
-Check and test:
-
-```bash
 cargo check
 cargo test --all-targets
 ```
 
-Before finishing changes, run:
-
-```bash
-cargo clippy --all-targets --fix --allow-dirty
-cargo fmt
-```
-
-## Repository Layout
-
-```text
-.
-├── Cargo.toml
-├── README.md
-├── AGENTS.md
-└── src/
-    └── main.rs
-```
+The editor is a standalone Cargo crate and uses the sibling Maolan engine and
+widgets crates.
