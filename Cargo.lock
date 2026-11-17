@@ -2221,14 +2221,13 @@ dependencies = [
  "serde_json",
  "symphonia",
  "tokio",
- "toml",
 ]
 
 [[package]]
 name = "maolan-engine"
-version = "0.4.22"
+version = "0.4.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f1d8ea933fe7f6507b675eb008c000cb2f117c46c3a91274546aaede128308b"
+checksum = "14ddcdb24bb33c8fd128b3ee45a164b2735cadc1dda715fc0fb995dc89637068"
 dependencies = [
  "alsa",
  "arc-swap",
@@ -2258,6 +2257,7 @@ dependencies = [
  "symphonia",
  "timestretch",
  "tokio",
+ "toml",
  "tracing",
  "uuid",
  "windows 0.62.2",

@@ -241,17 +241,23 @@ pub fn menu(show_open: bool) -> Element<'static, Message> {
     let edit_items = maolan_widgets::iced_aw::menu::Menu::new(menu_items!(
         (menu_item("Undo", Message::Undo)),
         (menu_item("Redo", Message::Redo)),
-        (menu_item("Next Zero Crossing", Message::JumpToNextZeroCrossing)),
         (menu_item("Cut", Message::CutSelection)),
         (menu_item("Copy", Message::CopySelection)),
         (menu_item("Paste", Message::PasteSelection)),
+        (menu_item("Preferences", Message::PreferencesDialog)),
+    ))
+    .width(180.0)
+    .offset(15.0)
+    .spacing(5.0);
+
+    let tools_items = maolan_widgets::iced_aw::menu::Menu::new(menu_items!(
+        (menu_item("Next Zero Crossing", Message::JumpToNextZeroCrossing)),
         (menu_item("Trim to Selection", Message::TrimSelection)),
         (menu_item("Normalize Selection", Message::NormalizeSelection)),
         (menu_item("Snap to Zero Crossing", Message::ToggleSnapToZeroCrossing)),
         (menu_item("Reverse", Message::Reverse)),
         (menu_item("Detect Markers", Message::DetectMarkersDialog)),
         (menu_item("Export Markers", Message::ExportMarkersDialog)),
-        (menu_item("Preferences", Message::PreferencesDialog)),
     ))
     .width(180.0)
     .offset(15.0)
@@ -260,6 +266,7 @@ pub fn menu(show_open: bool) -> Element<'static, Message> {
     menu_bar!(
         (menu_dropdown("File", Message::None), { file_items }),
         (menu_dropdown("Edit", Message::None), { edit_items }),
+        (menu_dropdown("Tools", Message::None), { tools_items }),
     )
     .draw_path(DrawPath::Backdrop)
     .close_on_item_click_global(true)
@@ -281,17 +288,23 @@ pub fn standalone_menu() -> Element<'static, Message> {
     let edit_items = maolan_widgets::iced_aw::menu::Menu::new(menu_items!(
         (menu_item("Undo", Message::Undo)),
         (menu_item("Redo", Message::Redo)),
-        (menu_item("Next Zero Crossing", Message::JumpToNextZeroCrossing)),
         (menu_item("Cut", Message::CutSelection)),
         (menu_item("Copy", Message::CopySelection)),
         (menu_item("Paste", Message::PasteSelection)),
+        (menu_item("Preferences", Message::PreferencesDialog)),
+    ))
+    .width(180.0)
+    .offset(15.0)
+    .spacing(5.0);
+
+    let tools_items = maolan_widgets::iced_aw::menu::Menu::new(menu_items!(
+        (menu_item("Next Zero Crossing", Message::JumpToNextZeroCrossing)),
         (menu_item("Trim to Selection", Message::TrimSelection)),
         (menu_item("Normalize Selection", Message::NormalizeSelection)),
         (menu_item("Snap to Zero Crossing", Message::ToggleSnapToZeroCrossing)),
         (menu_item("Reverse", Message::Reverse)),
         (menu_item("Detect Markers", Message::DetectMarkersDialog)),
         (menu_item("Export Markers", Message::ExportMarkersDialog)),
-        (menu_item("Preferences", Message::PreferencesDialog)),
     ))
     .width(180.0)
     .offset(15.0)
@@ -300,6 +313,7 @@ pub fn standalone_menu() -> Element<'static, Message> {
     menu_bar!(
         (menu_dropdown("File", Message::None), { file_items }),
         (menu_dropdown("Edit", Message::None), { edit_items }),
+        (menu_dropdown("Tools", Message::None), { tools_items }),
     )
     .draw_path(DrawPath::Backdrop)
     .close_on_item_click_global(true)
