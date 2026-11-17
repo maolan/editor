@@ -36,7 +36,18 @@ fn keyboard_message(event: keyboard::Event) -> Message {
             modifiers,
             repeat: false,
             ..
+        } if modifiers.is_empty() && c.as_str() == "s" => Message::ToggleSnapToZeroCrossing,
+        keyboard::Event::KeyPressed {
+            key: keyboard::Key::Character(c),
+            modifiers,
+            repeat: false,
+            ..
         } if modifiers.command() => match c.as_str() {
+            "c" | "C" => Message::CopySelection,
+            "x" | "X" => Message::CutSelection,
+            "v" | "V" => Message::PasteSelection,
+            "t" | "T" => Message::TrimSelection,
+            "n" | "N" => Message::NormalizeSelection,
             "z" | "Z" if modifiers.shift() => Message::Redo,
             "z" | "Z" => Message::Undo,
             "y" | "Y" => Message::Redo,

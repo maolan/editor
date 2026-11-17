@@ -29,6 +29,8 @@ pub struct EditApp {
     pub(crate) xfade_samples: usize,
     pub(crate) selection_anchor_samples: Option<usize>,
     pub(crate) selection_samples: Option<(usize, usize)>,
+    pub(crate) clipboard_samples: Option<Vec<f32>>,
+    pub(crate) snap_to_zero_crossing: bool,
     pub(crate) engine_clip_path: Option<std::path::PathBuf>,
     #[cfg(feature = "standalone")]
     pub(crate) engine_playback: Option<EnginePlayback>,

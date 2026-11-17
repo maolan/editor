@@ -98,6 +98,17 @@ pub fn audio_edit_action_for_message(app: &EditApp, message: &Message) -> Option
                 length_samples: end - start,
             })
         }),
+        Message::NormalizeSelection => app.selection_samples.and_then(|(start, end)| {
+            let channels = audio.channels.max(1);
+            let peak = audio.preview_samples[start * channels..end * channels]
+                .iter()
+                .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+            (start < end && peak > 0.0).then_some(AudioEditAction::Normalize {
+                start_sample: start,
+                length_samples: end - start,
+                peak,
+            })
+        }),
         _ => None,
     }
 }
