@@ -53,14 +53,14 @@ impl EditorPreferences {
                 if let Some(id) = self.default_output_device_id.as_deref() {
                     *line = format!("default_output_device_id = \"{id}\"");
                 } else {
-                    *line = String::new();
+                    line.clear()
                 }
                 output_set = true;
             } else if trimmed.starts_with("default_input_device_id") {
                 if let Some(id) = self.default_input_device_id.as_deref() {
                     *line = format!("default_input_device_id = \"{id}\"");
                 } else {
-                    *line = String::new();
+                    line.clear()
                 }
                 input_set = true;
             }
