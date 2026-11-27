@@ -34,8 +34,7 @@ does not create a reopenable editing project.
 
 ## Audio I/O
 
-Opening uses Maolan's Symphonia-backed decoder. Saving uses the shared
-OxideAV-backed encoders:
+Opening and saving use Maolan's shared OxideAV-backed audio codecs:
 
 - WAV (32-bit float for ordinary save; configurable bit depth for marker export)
 - FLAC and Ogg FLAC
