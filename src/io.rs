@@ -244,7 +244,7 @@ pub(crate) async fn open_audio_dialog() -> Option<PathBuf> {
     rfd::FileDialog::new()
         .add_filter(
             "Audio",
-            &["wav", "flac", "mp3", "ogg", "vorbis", "m4a", "aac", "alac"],
+            &["wav", "flac", "mp3", "ogg", "vorbis", "m4a", "aac"],
         )
         .pick_file()
 }
