@@ -1,6 +1,6 @@
 [package]
 name = "maolan-editor"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
 description = "Simple audio editor for Maolan audio files"
 license = "BSD-2-Clause"
@@ -25,8 +25,8 @@ standalone = [
 embedded = []
 
 [dependencies]
-maolan-engine = { version = "0.4.28", optional = true }
-maolan-widgets = "0.1.6"
+maolan-engine = { version = "0.4.29", optional = true }
+maolan-widgets = "0.1.7"
 rfd = "0.18.0"
 serde = { version = "1.0", features = ["derive"] }
 rubato = "5.1.0"
