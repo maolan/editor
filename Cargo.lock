@@ -37,9 +37,9 @@ dependencies = [
 
 [[package]]
 name = "ahash"
-version = "0.8.14"
+version = "0.8.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54dae3d1d7b8956f3506c4e999a74e77f932a59153ccf38ab8cf96db74bb9dc0"
+checksum = "3019c0b8d883a8a17df3129e417ef463c087807d245e8881a31d583dee1c0519"
 dependencies = [
  "cfg-if",
  "getrandom 0.4.3",
@@ -2289,7 +2289,7 @@ dependencies = [
 
 [[package]]
 name = "maolan-editor"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "maolan-engine",
  "maolan-widgets",
@@ -2303,9 +2303,9 @@ dependencies = [
 
 [[package]]
 name = "maolan-engine"
-version = "0.4.28"
+version = "0.4.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e6fefa4429c3116f1bb5a93608a28be91b12e7d586d25998e7d8fdfd26cea6f"
+checksum = "cc720390cf42c728fcc47e69a326b6be30640d250e32b323c83a54809d4d69cf"
 dependencies = [
  "alsa",
  "arc-swap",
